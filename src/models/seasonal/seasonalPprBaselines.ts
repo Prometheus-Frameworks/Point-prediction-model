@@ -34,10 +34,22 @@ export const baselinePrevYearPpr = (): SeasonalBaselineModel => ({
  * comparison honest under leave-one-out evaluation.
  */
 export const baselinePositionMean = (trainRows: SeasonalPlayerObservation[]): SeasonalBaselineModel => {
-  const overallMean = average(trainRows.map((row) => row.ppr_2025_actual as number));
-  const byPosition = trainRows.reduce<Partial<Record<ScoringPosition, number[]>>>((acc, row) => {
+  const finiteTargets = trainRows.map((row, index) => {
+    if (
+      typeof row.ppr_2025_actual !== 'number' ||
+      !Number.isFinite(row.ppr_2025_actual)
+    ) {
+      throw new Error(
+        `baselinePositionMean requires a finite, non-null target for every training row; row ${index} is invalid.`,
+      );
+    }
+    return row.ppr_2025_actual;
+  });
+
+  const overallMean = average(finiteTargets);
+  const byPosition = trainRows.reduce<Partial<Record<ScoringPosition, number[]>>>((acc, row, index) => {
     acc[row.position] ??= [];
-    acc[row.position]?.push(row.ppr_2025_actual as number);
+    acc[row.position]?.push(finiteTargets[index]);
     return acc;
   }, {});
 
