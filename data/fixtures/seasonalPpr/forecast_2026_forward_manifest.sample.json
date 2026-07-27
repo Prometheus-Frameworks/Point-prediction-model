@@ -1,0 +1,201 @@
+{
+  "artifact_type": "seasonal_fantasy_point_forecast_manifest",
+  "artifact_version": "seasonal-fantasy-point-forecast-manifest-v1-proposal",
+  "document_kind": "schema_example",
+  "sample_only": true,
+  "run_status": "not_executed",
+  "consumer_eligibility": "never",
+  "production_ready": false,
+  "output_kind": "model-inference",
+  "run_id": "seasonal-ppr-2026-forward-001-sample-not-executed",
+  "target_season": 2026,
+  "forecast_cutoff": null,
+  "cutoff_rule": "fact_available_at <= forecast_cutoff",
+  "generated_at": "2026-07-27T00:18:47.000Z",
+  "repository": "Prometheus-Frameworks/TIBER-Forecast",
+  "git_commit_sha": "49208472539bd11789b88ca8b3eb20c56a7d0db5",
+  "lane_name": "seasonal-fantasy-point-forecast",
+  "lane_version": "proposal-only",
+  "serialization": {
+    "serializer_id": null,
+    "serializer_version": null
+  },
+  "freshness_policy_refs": [],
+  "target_definition": {
+    "target_id": "generic-full-ppr-season-total-proposal",
+    "description": "Proposed full regular-season generic-PPR total; source reconciliation is not implemented.",
+    "target_season": 2026,
+    "regular_season_only": true,
+    "week_inclusion_rule": null,
+    "season_completeness_rule": null,
+    "aggregation_rule": null,
+    "scoring_profile_id": "tiber-generic-full-ppr-v1-proposal",
+    "outcome_field": "actual_outcome",
+    "forward_outcome_must_be_null": true
+  },
+  "evaluation_design": {
+    "design_id": null,
+    "design_sha256": null,
+    "historical_origins": [],
+    "model_selection_partition": null,
+    "final_evaluation_partition": null,
+    "split_method": null,
+    "fold_grouping": null,
+    "hyperparameter_selection": null,
+    "final_origin_not_used_for_tuning": null,
+    "baseline_definitions": []
+  },
+  "historical_validation_summary": {
+    "evaluation_artifact_refs": [],
+    "overall_metrics": {},
+    "position_metrics": {},
+    "calibration_metrics": {},
+    "sanity_controls": [],
+    "limitations": [
+      "No forward-run historical validation package has been selected."
+    ]
+  },
+  "model": {
+    "model_id": null,
+    "model_version": null,
+    "configuration_sha256": null,
+    "model_type": null,
+    "hyperparameters": {},
+    "feature_set_id": null,
+    "feature_names_ordered": [],
+    "admitted_capabilities": []
+  },
+  "final_fit": {
+    "historical_row_count": 0,
+    "historical_target_seasons": [],
+    "training_population_sha256": null,
+    "training_data_sha256": null,
+    "model_artifact_ref": null
+  },
+  "scoring_profile": {
+    "profile_id": "tiber-generic-full-ppr-v1-proposal",
+    "profile_version": "proposal-only",
+    "profile_sha256": null,
+    "league_specific": false,
+    "weights": {
+      "reception": 1,
+      "receiving_yard": 0.1,
+      "receiving_touchdown": 6,
+      "rushing_yard": 0.1,
+      "rushing_touchdown": 6,
+      "passing_yard": 0.04,
+      "passing_touchdown": 4,
+      "interception": -2
+    },
+    "bonuses": [],
+    "supported_positions": [
+      "QB",
+      "RB",
+      "WR",
+      "TE"
+    ],
+    "unsupported_domains": [
+      "IDP"
+    ],
+    "replacement_context": null,
+    "source_reconciliation": {
+      "status": "not_run",
+      "validator_id": null,
+      "evidence_ref": null
+    }
+  },
+  "artifact_inputs": [],
+  "population_census": {
+    "census_artifact_ref": null,
+    "census_sha256": null,
+    "scope_definition": null,
+    "effective_at": null,
+    "eligibility_policy_id": null,
+    "eligibility_policy_sha256": null,
+    "row_count": 0,
+    "eligible_target_count": 0,
+    "status_counts": {
+      "forecast_available": 0,
+      "unavailable_missing_required_inputs": 0,
+      "unsupported_position_domain": 0,
+      "identity_unresolved": 0,
+      "eligibility_unresolved": 0,
+      "position_domain_unresolved": 0,
+      "population_ineligible": 0
+    },
+    "reconciliation": {
+      "output_row_count": 0,
+      "duplicate_population_row_ids": [],
+      "duplicate_resolved_canonical_ids": [],
+      "missing_population_row_ids": [],
+      "extra_population_row_ids": [],
+      "one_to_one_complete": false
+    }
+  },
+  "forecast_uncertainty": {
+    "status": "unavailable_not_calibrated",
+    "method_id": null,
+    "method_version": null,
+    "lower_quantile_level": null,
+    "median_quantile_level": null,
+    "upper_quantile_level": null,
+    "nominal_interval_coverage": null,
+    "calibration_population": null,
+    "calibration_artifact_ref": null,
+    "empirical_coverage_by_origin": [],
+    "empirical_coverage_by_position": [],
+    "limitations": [
+      "No statistically defensible seasonal uncertainty method is implemented."
+    ]
+  },
+  "outputs": [],
+  "previous_run_id": null,
+  "diff_vs_previous": {
+    "status": "no_previous_run",
+    "compatibility": {
+      "same_lane": false,
+      "same_target_definition": false,
+      "same_scoring_profile": false,
+      "same_cutoff_semantics": false,
+      "same_population_scope": false
+    },
+    "inputs": {
+      "added": [],
+      "removed": [],
+      "changed": []
+    },
+    "features": {
+      "added": [],
+      "removed": [],
+      "changed": []
+    },
+    "governance": {
+      "changed": []
+    },
+    "population": {
+      "added": [],
+      "removed": [],
+      "status_changed": []
+    },
+    "historical_metrics": {
+      "overall": [],
+      "by_position": []
+    },
+    "forecast_movement": {
+      "summary": {
+        "moved_up": 0,
+        "moved_down": 0,
+        "unchanged": 0,
+        "unavailable": 0
+      },
+      "largest_moves": []
+    }
+  },
+  "lifecycle_attestation_refs": [],
+  "limitations": [
+    "This file is a schema proposal example, not an execution manifest or Forecast artifact.",
+    "It contains no player rows and no fabricated forecast values.",
+    "No cutoff, input, model, final fit, validation, promotion, or freshness attestation exists.",
+    "It is never eligible for promotion or downstream consumption."
+  ]
+}
