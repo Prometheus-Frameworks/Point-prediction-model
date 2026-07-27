@@ -804,3 +804,14 @@ export type { ActionTier } from '../board/types/actionTier.js';
 export type { DecisionBoardRow, DecisionBoardInputs, DecisionDirection, DecisionTag } from '../board/types/decisionBoardRow.js';
 export type { RankedDecisionBoardRow, RankDecisionBoardOptions } from '../board/ranking/rankDecisionBoard.js';
 export type { FilterDecisionBoardOptions } from '../board/ranking/filterDecisionBoard.js';
+
+// Candidate-stage seasonal forward runtime. These exports provide library
+// capabilities only; no command, route, configuration, or live-data loader is
+// registered by this module.
+export * from '../serialization/canonicalForwardArtifacts.js';
+export * from '../contracts/genericFullPprProfile.js';
+export * from '../contracts/forwardSeasonalPpr.js';
+export * from '../models/seasonal/forwardRidgeModel.js';
+export * from '../services/runForwardCandidateService.js';
+export * from '../validation/validateForwardCandidate.js';
+export * from '../artifacts/writeForwardCandidateArtifacts.js';

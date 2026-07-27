@@ -11,6 +11,16 @@ export const baselineMeanModel = (trainRows: WrTeLabeledRow[]): BenchmarkModel =
   if (trainRows.length === 0) {
     throw new Error('baselineMeanModel requires at least one training row.');
   }
+  for (const [index, row] of trainRows.entries()) {
+    if (
+      typeof row.target_fantasy_points_ppr !== 'number' ||
+      !Number.isFinite(row.target_fantasy_points_ppr)
+    ) {
+      throw new Error(
+        `baselineMeanModel requires a finite, non-null target for every training row; row ${index} is invalid.`,
+      );
+    }
+  }
 
   const overallMean = average(trainRows.map((row) => row.target_fantasy_points_ppr));
   const positionMeans = trainRows.reduce<Partial<Record<WrTeLabeledRow['player_position'], number[]>>>(

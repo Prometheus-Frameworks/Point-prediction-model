@@ -204,6 +204,16 @@ export const trainSeasonalRidgeModel = (
   }
 
   const lambda = options.lambda ?? DEFAULT_LAMBDA;
+  if (!Number.isFinite(lambda) || lambda < 0) {
+    throw new Error('trainSeasonalRidgeModel requires a finite, non-negative lambda.');
+  }
+  for (const [index, row] of trainRows.entries()) {
+    if (row.ppr_2025_actual === null || !Number.isFinite(row.ppr_2025_actual)) {
+      throw new Error(
+        `trainSeasonalRidgeModel requires a finite, non-null target for every training row; row ${index} is invalid.`,
+      );
+    }
+  }
   const playerHistoryGate = options.playerHistoryProductionOnly;
 
   const numericMatrix = trainRows.map((row) => numericVector(row, playerHistoryGate));

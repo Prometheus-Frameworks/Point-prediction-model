@@ -85,6 +85,17 @@ export const vectorizeWrTeFeatureRow = (row: WrTeFeatureRow, schema: ModelSchema
   });
 
 export const prepareTrainingMatrix = (rows: WrTeLabeledRow[], schema?: ModelSchema): TrainingMatrix => {
+  for (const [index, row] of rows.entries()) {
+    if (
+      typeof row.target_fantasy_points_ppr !== 'number' ||
+      !Number.isFinite(row.target_fantasy_points_ppr)
+    ) {
+      throw new Error(
+        `prepareTrainingMatrix requires a finite, non-null target for every training row; row ${index} is invalid.`,
+      );
+    }
+  }
+
   const lockedSchema = schema ?? buildSchema(rows);
 
   return {
