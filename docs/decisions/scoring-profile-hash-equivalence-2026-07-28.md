@@ -51,7 +51,14 @@ parses to exactly the Forecast JSON number):
 1. A `ScoringReconciliationEvidenceRef` assembled for a forward candidate run may
    carry `scoring_profile_sha256: a368b75b…` (as Forecast's runtime validator
    requires) while referencing TIBER-Data#229 evidence whose own contract declares
-   `b1404afb…`, **provided the reference cites this decision record**.
+   `b1404afb…`, **provided the run cites this decision record in a schema-valid
+   location**. The reference itself cannot carry the citation:
+   `ScoringReconciliationEvidenceRef` is field-exact (six fields;
+   `validateScoringReconciliationEvidence` rejects any additional field), and its
+   sole `evidence_ref` must identify the TIBER-Data evidence artifact. The
+   citation therefore belongs in the succeeded manifest's `limitations` array
+   (free-text, already part of the manifest contract) and in the authorizing run
+   issue/completion packet — one of the two is required, both are recommended.
 2. An independent reviewer recomputing the Data contract's declared profile hash
    and obtaining `b1404afb…` instead of `a368b75b…` must treat this record — not
    producer assertion — as the bridge, and may re-verify the term table above
@@ -64,14 +71,39 @@ parses to exactly the Forecast JSON number):
 ## Verification (reproducible)
 
 Both derivations were re-executed on 2026-07-28 against the merged Forecast `main`
-(`4dffc68`) and TIBER-Data#229 head (`0c4f162d4e25fb3ea9a67d942af72fe90a1b05c7`):
+(`4dffc68`) and TIBER-Data#229 head (`0c4f162d4e25fb3ea9a67d942af72fe90a1b05c7`).
+Complete commands, each printing the full digest:
 
-- Forecast: SHA-256 over `canonicalForwardJsonBytes(TIBER_GENERIC_FULL_PPR_V1)`
-  equals `a368b75b…` (also self-checked at module load; the module throws on
-  mismatch).
-- TIBER-Data: SHA-256 over
-  `json.dumps(profile.definition, ensure_ascii=False, sort_keys=True, separators=(",", ":"))`
-  equals `b1404afb…`.
+Forecast hash — run from a TIBER-Forecast checkout at or after merge commit
+`4dffc68` (the module additionally self-checks this pin at load and throws on
+mismatch):
+
+```bash
+npx tsx -e "
+import('./src/contracts/genericFullPprProfile.ts').then(async (m) => {
+  const { createHash } = await import('node:crypto');
+  console.log(createHash('sha256').update(m.getTiberGenericFullPprV1CanonicalBytes()).digest('hex'));
+});"
+# expected: a368b75bf5503558a4f664e0486e2c3cc75c01004d4527fd29ecaa1e247a6274
+```
+
+TIBER-Data hash — run from a TIBER-Data checkout whose history contains the
+TIBER-Data#229 commit (post-merge `main` qualifies):
+
+```bash
+python3 - <<'EOF'
+import hashlib, json, subprocess
+raw = subprocess.run(
+    ["git", "show",
+     "0c4f162d4e25fb3ea9a67d942af72fe90a1b05c7:docs/contracts/player-season-coverage-v0-generic-ppr-reconciliation-v1.json"],
+    capture_output=True, check=True).stdout
+definition = json.loads(raw)["profile"]["definition"]
+payload = json.dumps(definition, ensure_ascii=False, sort_keys=True,
+                     separators=(",", ":")).encode("utf-8")
+print(hashlib.sha256(payload).hexdigest())
+EOF
+# expected: b1404afb1c7c6c9760b36090e5a84ef3fd2a29dfe8ba2e2fe0efb98d0ac6622e
+```
 
 ## Non-decisions
 
