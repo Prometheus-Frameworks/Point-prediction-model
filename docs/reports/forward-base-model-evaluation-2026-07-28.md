@@ -4,7 +4,7 @@
 > **Issue:** [#168](https://github.com/Prometheus-Frameworks/TIBER-Forecast/issues/168)
 > **Terminal decision:** `forward_base_model_configuration_frozen`
 > **Frozen configuration SHA-256:** `6bb7323cdc11786a13b5ca92c66f1e72b34c9387cc4760b6f293c95b3682ad1c`
-> **Freeze-record SHA-256:** `5f80f735a4aa8e9948fc241aee5178f319e60144cd23ec647884edb694d91ff0`
+> **Freeze-record SHA-256:** `920fecc41c760780bf7f65480e9687156cecf1203b0d1002436dc008424e19db`
 > **Report artifact:** [`forward_base_model_evaluation_v1.json`](../../data/experiments/forwardBaseEval/forward_base_model_evaluation_v1.json)
 > **Frozen package:** [`forward_base_frozen_configuration_v1.json`](../../data/experiments/forwardBaseEval/forward_base_frozen_configuration_v1.json)
 > **Complete freeze record:** [`forward_base_configuration_freeze_record_v1.json`](../../data/experiments/forwardBaseEval/forward_base_configuration_freeze_record_v1.json)
@@ -81,17 +81,24 @@ additional identities required by #168:
   train-fold-only population-z-score rules, categorical encoding, and clamp;
 - lambda candidates, selection rule and definitions, selected lambda, final
   definition, continuation rule, and enforced stage order;
-- historical evaluation artifact SHA `04fae89a…`, evaluation implementation
-  commit `dc1816d…`, runtime base `640c041…`, all runtime/schema/software
-  identities, and the explicit excluded-family ledger;
+- historical evaluation artifact SHA `04fae89a…` and its producer commit
+  `dc1816d…`, corrected governed-protocol implementation commit `68bc8a67…`
+  plus raw SHA-256 identities for all 14 load-bearing files, runtime base
+  `640c041…`, all runtime/schema/software identities, and the explicit
+  excluded-family ledger;
 - the non-activation boundary: no 2026 admission, cutoff, candidate execution,
   promotion, deployment, or consumption.
 
-The wrapper self-hashes to `5f80f735…` (artifact-file SHA-256 `343e7dc0…`).
-`validateForwardBaseConfigurationFreezeRecord` recomputes the self-hash, rebuilds
-the complete fixed v1 shape, validates the embedded runtime package, and can
-verify the exact runtime, origin, and evaluation artifact bytes supplied by a
-later consumer.
+The two-commit construction avoids self-reference: implementation commit
+`68bc8a67…` contains the complete corrected protocol, builder, validator,
+runner, and tests; its child adds only this immutable record and documentation.
+The wrapper self-hashes to `920fecc4…` (artifact-file SHA-256 `d90f6c79…`).
+`validateForwardBaseConfigurationFreezeRecord` recomputes the self-hash,
+rebuilds the immutable v1 shape, rejects any runtime configuration other than
+the selected λ = 0.1 package, and cross-checks that lambda/configuration hash
+against the approved report. It hashes the exact raw runtime, origin, and report
+bytes—so formatting or duplicate-key drift fails—and verifies all load-bearing
+source bytes loaded from the governed implementation commit.
 
 ## Population coverage and exclusions
 
@@ -120,5 +127,5 @@ inference implementation under the #170 gate.
 ```bash
 npx tsx scripts/runForwardBaseEvalBuild.ts --data-repo-root ../TIBER-Data
 npx tsx scripts/runForwardBaseModelEvaluation.ts --check
-npx vitest run tests/forwardBaseEvaluation.test.ts
+npx vitest run tests/forwardBaseEvaluation.test.ts tests/forwardBaseFreezeRecord.test.ts
 ```
