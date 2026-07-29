@@ -7,12 +7,14 @@ import {
   FORWARD_BASE_EVAL_SELECTION_DEFINITIONS,
   ForwardBaseEvalBuildError,
   buildCandidateConfiguration,
+  buildForwardBaseSelectionOriginPackages,
   buildOriginPairPackages,
   centsToPoints,
   deriveGenericPprCents,
   runForwardBaseEvaluation,
   runForwardBaseSelectionSweep,
   type ForwardBaseEvalOriginPackages,
+  type ForwardBaseSelectionOriginPackages,
 } from '../src/experiments/forwardBaseEval/forwardBaseEvaluation.js';
 import { validateFrozenForwardRidgeConfiguration } from '../src/models/seasonal/forwardRidgeModel.js';
 import { canonicalForwardJsonBytes } from '../src/serialization/canonicalForwardArtifacts.js';
@@ -205,24 +207,57 @@ describe('evaluation protocol boundaries', () => {
     ).toThrow(/leak/);
   });
 
-  it('selection never touches the final held-out pair', () => {
-    // Structural assertion on the pinned definitions...
+  it('seals final-pair bytes from selection and exposes them only after configuration freeze', () => {
     const finalPair = FORWARD_BASE_EVAL_FINAL_DEFINITION.evaluation_pair_id;
     for (const definition of FORWARD_BASE_EVAL_SELECTION_DEFINITIONS) {
       expect(definition.evaluation_pair_id).not.toBe(finalPair);
       expect(definition.training_pair_ids).not.toContain(finalPair);
     }
-    // ...and an executable one: the sweep succeeds on packages where the final
-    // pair does not exist at all, proving it cannot be read during selection.
-    const withoutFinal: ForwardBaseEvalOriginPackages = {
+
+    const finalPairValue = packages.pairs.find((pair) => pair.pair_id === finalPair);
+    if (!finalPairValue) throw new Error('final fixture pair missing');
+    let finalAccessAllowed = false;
+    let finalWasObserved = false;
+    const guardedFinalPair = new Proxy(finalPairValue, {
+      get(target, property, receiver) {
+        if (!finalAccessAllowed) {
+          throw new Error(`held-out pair bytes observed before freeze: ${String(property)}`);
+        }
+        finalWasObserved = true;
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+    const guardedPackages: ForwardBaseEvalOriginPackages = {
       ...packages,
-      pairs: packages.pairs.filter((pair) => pair.pair_id !== finalPair),
+      pairs: [...packages.pairs.slice(0, 3), guardedFinalPair],
     };
-    const outcome = runForwardBaseSelectionSweep(withoutFinal, [1, 10]);
-    expect(outcome.sweep).toHaveLength(2);
+
+    // Building the selection view copies only the first three pairs. A complete
+    // package cast around the type boundary is rejected by length before the
+    // poison final element can be inspected.
+    const selectionPackages =
+      buildForwardBaseSelectionOriginPackages(guardedPackages);
     expect(() =>
-      runForwardBaseEvaluation(withoutFinal, FORWARD_BASE_EVAL_FINAL_DEFINITION, buildCandidateConfiguration(1)),
-    ).toThrow(/unknown evaluation pair/);
+      runForwardBaseSelectionSweep(
+        guardedPackages as unknown as ForwardBaseSelectionOriginPackages,
+        [1, 10],
+      ),
+    ).toThrow(/may not expose the final held-out pair/);
+    const outcome = runForwardBaseSelectionSweep(selectionPackages, [1, 10]);
+    expect(outcome.sweep).toHaveLength(2);
+    expect(finalWasObserved).toBe(false);
+
+    // Freeze from selection alone, then—and only then—unlock the final pair for
+    // its held-out evaluation.
+    const frozen = buildCandidateConfiguration(outcome.selected_lambda);
+    finalAccessAllowed = true;
+    const finalResult = runForwardBaseEvaluation(
+      guardedPackages,
+      FORWARD_BASE_EVAL_FINAL_DEFINITION,
+      frozen,
+    );
+    expect(finalResult.scored_row_count).toBe(12);
+    expect(finalWasObserved).toBe(true);
   });
 
   it('baselines are train-fold-only', () => {
@@ -280,7 +315,10 @@ describe('committed artifacts', () => {
   });
 
   it('committed frozen configuration and evaluation report reproduce exactly from committed packages', () => {
-    const selection = runForwardBaseSelectionSweep(committedPackages, FORWARD_BASE_EVAL_LAMBDA_CANDIDATES);
+    const selection = runForwardBaseSelectionSweep(
+      buildForwardBaseSelectionOriginPackages(committedPackages),
+      FORWARD_BASE_EVAL_LAMBDA_CANDIDATES,
+    );
     const frozen = buildCandidateConfiguration(selection.selected_lambda);
     const committedFrozen = readFileSync(
       path.join(repoRoot, 'data/experiments/forwardBaseEval/forward_base_frozen_configuration_v1.json'),

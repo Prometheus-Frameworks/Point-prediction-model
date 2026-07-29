@@ -4,8 +4,10 @@
 > **Issue:** [#168](https://github.com/Prometheus-Frameworks/TIBER-Forecast/issues/168)
 > **Terminal decision:** `forward_base_model_configuration_frozen`
 > **Frozen configuration SHA-256:** `6bb7323cdc11786a13b5ca92c66f1e72b34c9387cc4760b6f293c95b3682ad1c`
+> **Freeze-record SHA-256:** `5f80f735a4aa8e9948fc241aee5178f319e60144cd23ec647884edb694d91ff0`
 > **Report artifact:** [`forward_base_model_evaluation_v1.json`](../../data/experiments/forwardBaseEval/forward_base_model_evaluation_v1.json)
 > **Frozen package:** [`forward_base_frozen_configuration_v1.json`](../../data/experiments/forwardBaseEval/forward_base_frozen_configuration_v1.json)
+> **Complete freeze record:** [`forward_base_configuration_freeze_record_v1.json`](../../data/experiments/forwardBaseEval/forward_base_configuration_freeze_record_v1.json)
 
 ## What ran
 
@@ -37,8 +39,12 @@ not zero-filled.
 Lambda candidates `0.1, 1, 10, 100` and the selection rule (minimize mean MAE
 over A+B, ties to smaller lambda) were pinned on issue #168 **before any
 evaluation ran**. The configuration — including the selected lambda — was frozen
-and hashed before the final pair was evaluated; the final definition is
-structurally unreachable from the selection API (executable test).
+and hashed before the final pair was evaluated. Selection receives a validated
+three-pair view that rejects complete packages before inspecting a fourth pair;
+the final definition and final-pair bytes are therefore structurally unreachable
+through the selection API. A poison-pair regression fails on any pre-freeze
+property read and proves the final pair is first observed only by the post-freeze
+final evaluation.
 
 ## Results
 
@@ -61,6 +67,32 @@ with no direction change across origins. The continuation rule (beat both
 baselines on the final origin; lose to none during selection) is satisfied, so
 the configuration freezes.
 
+## Complete configuration identity
+
+The runtime ridge package remains independently reusable at configuration SHA
+`6bb7323c…`. The separate immutable freeze record binds that package to the
+additional identities required by #168:
+
+- generic full-PPR target/profile identity, both approved profile hashes, the
+  component-binding contract, and both operator decision records;
+- governed source commit/path/SHA, origin-package SHA, seasons, scope, and
+  supported positions;
+- ordered feature lineage, reject-row missingness, per-game transform,
+  train-fold-only population-z-score rules, categorical encoding, and clamp;
+- lambda candidates, selection rule and definitions, selected lambda, final
+  definition, continuation rule, and enforced stage order;
+- historical evaluation artifact SHA `04fae89a…`, evaluation implementation
+  commit `dc1816d…`, runtime base `640c041…`, all runtime/schema/software
+  identities, and the explicit excluded-family ledger;
+- the non-activation boundary: no 2026 admission, cutoff, candidate execution,
+  promotion, deployment, or consumption.
+
+The wrapper self-hashes to `5f80f735…` (artifact-file SHA-256 `343e7dc0…`).
+`validateForwardBaseConfigurationFreezeRecord` recomputes the self-hash, rebuilds
+the complete fixed v1 shape, validates the embedded runtime package, and can
+verify the exact runtime, origin, and evaluation artifact bytes supplied by a
+later consumer.
+
 ## Population coverage and exclusions
 
 Every pair's package itemizes exclusions rather than dropping them: players with
@@ -75,7 +107,8 @@ rows. Full ledgers and completeness-class distributions are in
 Established: a population-scale, multi-origin, leakage-guarded evidence base for
 the base-feature configuration now frozen as
 `6bb7323c…`, replacing the 39-row Run 1 scaffold as the model-evidence basis;
-determinism (two-build byte-identical artifacts; `--check` verification mode).
+determinism (two-build byte-identical artifacts; `--check` verification mode);
+and a self-verifying, hash-bound complete freeze identity for future gate use.
 
 Not established or authorized: input admission for any run, a forecast cutoff,
 execution of `seasonal-ppr-2026-forward-001`, uncertainty calibration, promotion,

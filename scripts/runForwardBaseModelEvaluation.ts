@@ -20,17 +20,27 @@ import {
   FORWARD_BASE_EVAL_FINAL_DEFINITION,
   FORWARD_BASE_EVAL_LAMBDA_CANDIDATES,
   buildCandidateConfiguration,
+  buildForwardBaseSelectionOriginPackages,
   runForwardBaseEvaluation,
   runForwardBaseSelectionSweep,
   type ForwardBaseEvalOriginPackages,
   type ForwardBaseModelEvaluationResult,
 } from '../src/experiments/forwardBaseEval/forwardBaseEvaluation.js';
+import {
+  FORWARD_BASE_EVALUATION_ARTIFACT_PATH,
+  FORWARD_BASE_FREEZE_RECORD_PATH,
+  FORWARD_BASE_ORIGIN_PACKAGES_PATH,
+  FORWARD_BASE_RUNTIME_CONFIGURATION_PATH,
+  buildForwardBaseConfigurationFreezeRecord,
+  validateForwardBaseConfigurationFreezeRecord,
+} from '../src/experiments/forwardBaseEval/forwardBaseFreezeRecord.js';
 import { canonicalForwardJsonBytes } from '../src/serialization/canonicalForwardArtifacts.js';
 
 const GENERATED_AT = '2026-07-28T12:00:00.000Z';
-const PACKAGES_PATH = 'data/experiments/forwardBaseEval/forward_base_eval_origin_pairs_v1.json';
-const REPORT_PATH = 'data/experiments/forwardBaseEval/forward_base_model_evaluation_v1.json';
-const FROZEN_CONFIG_PATH = 'data/experiments/forwardBaseEval/forward_base_frozen_configuration_v1.json';
+const PACKAGES_PATH = FORWARD_BASE_ORIGIN_PACKAGES_PATH;
+const REPORT_PATH = FORWARD_BASE_EVALUATION_ARTIFACT_PATH;
+const FROZEN_CONFIG_PATH = FORWARD_BASE_RUNTIME_CONFIGURATION_PATH;
+const FREEZE_RECORD_PATH = FORWARD_BASE_FREEZE_RECORD_PATH;
 
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -52,8 +62,14 @@ const compactResult = (result: ForwardBaseModelEvaluationResult) => ({
   model_minus_best_baseline_mae: result.model_minus_best_baseline_mae,
 });
 
-// Stage 1: lambda selection on the two selection evaluations only.
-const selection = runForwardBaseSelectionSweep(packages, FORWARD_BASE_EVAL_LAMBDA_CANDIDATES);
+// Stage 1: lambda selection receives a validated package containing only the
+// three permitted pre-final pairs. The held-out pair is not reachable through
+// the selection API.
+const selectionPackages = buildForwardBaseSelectionOriginPackages(packages);
+const selection = runForwardBaseSelectionSweep(
+  selectionPackages,
+  FORWARD_BASE_EVAL_LAMBDA_CANDIDATES,
+);
 
 // Stage 2: freeze the configuration from selection alone.
 const frozenConfiguration = buildCandidateConfiguration(selection.selected_lambda);
@@ -112,12 +128,32 @@ const report = {
 };
 
 const reportBytes = canonicalForwardJsonBytes(report);
+const freezeRecord = buildForwardBaseConfigurationFreezeRecord({
+  runtimeConfiguration: frozenConfiguration,
+  originPackagesSha256: sha256(packagesBytes),
+  historicalEvaluationSha256: sha256(reportBytes),
+});
+const freezeValidation = validateForwardBaseConfigurationFreezeRecord(
+  freezeRecord,
+  {
+    runtimeConfiguration: frozenConfiguration,
+    originPackages: packages,
+    historicalEvaluation: report,
+  },
+);
+if (!freezeValidation.ok) {
+  throw new Error(
+    `generated freeze record failed validation: ${freezeValidation.errors.join('; ')}`,
+  );
+}
+const freezeRecordBytes = canonicalForwardJsonBytes(freezeValidation.data);
 
 if (process.argv.includes('--check')) {
   let clean = true;
   for (const [filePath, expected] of [
     [REPORT_PATH, reportBytes],
     [FROZEN_CONFIG_PATH, frozenConfigurationBytes],
+    [FREEZE_RECORD_PATH, freezeRecordBytes],
   ] as const) {
     if (!existsSync(filePath) || !readFileSync(filePath).equals(expected)) {
       console.error(`STALE: ${filePath} does not match a deterministic rebuild.`);
@@ -125,13 +161,16 @@ if (process.argv.includes('--check')) {
     }
   }
   if (!clean) process.exit(1);
-  console.log('Deterministic outputs current: report and frozen configuration match exact rebuilds.');
+  console.log(
+    'Deterministic outputs current: report, frozen configuration, and complete freeze record match exact rebuilds.',
+  );
   process.exit(0);
 }
 
 mkdirSync(path.dirname(path.resolve(REPORT_PATH)), { recursive: true });
 writeFileSync(path.resolve(REPORT_PATH), reportBytes);
 writeFileSync(path.resolve(FROZEN_CONFIG_PATH), frozenConfigurationBytes);
+writeFileSync(path.resolve(FREEZE_RECORD_PATH), freezeRecordBytes);
 
 console.log(`selected lambda: ${selection.selected_lambda}`);
 console.log(`frozen configuration_sha256: ${frozenConfiguration.configuration_sha256}`);
@@ -146,3 +185,4 @@ console.log(
 console.log(`terminal decision: ${report.terminal_decision}`);
 console.log(`report sha256=${sha256(reportBytes)}`);
 console.log(`frozen config sha256(file)=${sha256(frozenConfigurationBytes)}`);
+console.log(`freeze record sha256(file)=${sha256(freezeRecordBytes)}`);

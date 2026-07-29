@@ -19,7 +19,8 @@
  * stays excluded rather than zero-filled; no 2026 population; no
  * forward forecast emission. The final held-out evaluation pair (2024 inputs ->
  * 2025 targets) is structurally unreachable during lambda selection: the
- * selection API only accepts the two selection evaluations.
+ * selection API only accepts a validated three-pair package that excludes the
+ * final pair while supplying the two pinned selection evaluations.
  */
 import {
   fitSeasonalForwardModel,
@@ -181,6 +182,92 @@ export interface ForwardBaseEvalOriginPackages {
   };
   pairs: ForwardBaseEvalPairPackage[];
 }
+
+/**
+ * The only season-pair packages selection is permitted to observe. The final
+ * 2024->2025 held-out pair is deliberately absent from this type and is
+ * rejected by the runtime validator before any selection evaluation starts.
+ */
+export const FORWARD_BASE_EVAL_SELECTION_PAIR_IDS = [
+  'pair-2021-2022',
+  'pair-2022-2023',
+  'pair-2023-2024',
+] as const;
+
+export interface ForwardBaseSelectionOriginPackages
+  extends Omit<ForwardBaseEvalOriginPackages, 'pairs'> {
+  pairs: [
+    ForwardBaseEvalPairPackage,
+    ForwardBaseEvalPairPackage,
+    ForwardBaseEvalPairPackage,
+  ];
+}
+
+type ForwardBaseEvaluationOriginPackages = Pick<ForwardBaseEvalOriginPackages, 'pairs'>;
+
+/**
+ * Validate an already-isolated selection package. A complete origin package is
+ * rejected by length before any pair object is inspected, so callers cannot
+ * accidentally expose held-out pair bytes by casting around the TypeScript
+ * boundary.
+ */
+export const validateForwardBaseSelectionOriginPackages = (
+  value: unknown,
+): ForwardBaseSelectionOriginPackages => {
+  if (typeof value !== 'object' || value === null) {
+    throw new ForwardBaseEvalBuildError('selection origin packages must be an object.');
+  }
+  const candidate = value as Record<string, unknown>;
+  if (!Array.isArray(candidate.pairs)) {
+    throw new ForwardBaseEvalBuildError('selection origin packages must contain a pairs array.');
+  }
+  if (candidate.pairs.length !== FORWARD_BASE_EVAL_SELECTION_PAIR_IDS.length) {
+    throw new ForwardBaseEvalBuildError(
+      `selection origin packages must contain exactly ${FORWARD_BASE_EVAL_SELECTION_PAIR_IDS.length} pairs and may not expose the final held-out pair.`,
+    );
+  }
+  const actualIds = candidate.pairs.map((pair, index) => {
+    if (typeof pair !== 'object' || pair === null || typeof pair.pair_id !== 'string') {
+      throw new ForwardBaseEvalBuildError(`selection origin packages pair ${index} is malformed.`);
+    }
+    return pair.pair_id;
+  });
+  if (
+    actualIds.some(
+      (pairId, index) => pairId !== FORWARD_BASE_EVAL_SELECTION_PAIR_IDS[index],
+    )
+  ) {
+    throw new ForwardBaseEvalBuildError(
+      `selection origin package ids must be exactly ${FORWARD_BASE_EVAL_SELECTION_PAIR_IDS.join(', ')}; got ${actualIds.join(', ')}.`,
+    );
+  }
+  if (
+    candidate.artifact_id !== 'forward_base_eval_origin_pairs_v1' ||
+    typeof candidate.generated_at !== 'string' ||
+    typeof candidate.source !== 'object' ||
+    candidate.source === null
+  ) {
+    throw new ForwardBaseEvalBuildError(
+      'selection origin packages must preserve the governed origin-package identity.',
+    );
+  }
+  return candidate as unknown as ForwardBaseSelectionOriginPackages;
+};
+
+/**
+ * Create the sealed selection view without reading the held-out pair object.
+ * `slice(0, 3)` copies only the three permitted array elements; the resulting
+ * package then passes the exact runtime validator above.
+ */
+export const buildForwardBaseSelectionOriginPackages = (
+  packages: ForwardBaseEvalOriginPackages,
+): ForwardBaseSelectionOriginPackages =>
+  validateForwardBaseSelectionOriginPackages({
+    artifact_id: packages.artifact_id,
+    generated_at: packages.generated_at,
+    source: packages.source,
+    pairs: packages.pairs.slice(0, FORWARD_BASE_EVAL_SELECTION_PAIR_IDS.length),
+  });
 
 interface MinimalCoverageRow extends Record<string, unknown> {
   player_id: string;
@@ -481,7 +568,7 @@ const summarize = (pairs: ScoredPair[]) => ({
  * the runtime's own season-ordering validators with true, unshifted semantics.
  */
 export const runForwardBaseEvaluation = (
-  packages: ForwardBaseEvalOriginPackages,
+  packages: ForwardBaseEvaluationOriginPackages,
   definition: ForwardBaseEvaluationDefinition,
   configurationPackage: FrozenForwardRidgeConfigurationPackageV1,
 ): ForwardBaseModelEvaluationResult => {
@@ -656,20 +743,22 @@ export interface ForwardBaseSelectionOutcome {
 }
 
 /**
- * Lambda selection over the two selection evaluations ONLY. This function has
- * no access to the final held-out definition; the runner freezes the
+ * Lambda selection over the two selection evaluations ONLY. This function
+ * validates a three-pair selection-only package before doing any work, so it has
+ * no access to the final held-out pair or definition; the runner freezes the
  * configuration from this outcome before the final evaluation is constructed.
  */
 export const runForwardBaseSelectionSweep = (
-  packages: ForwardBaseEvalOriginPackages,
+  packages: ForwardBaseSelectionOriginPackages,
   lambdaCandidates: readonly number[] = FORWARD_BASE_EVAL_LAMBDA_CANDIDATES,
 ): ForwardBaseSelectionOutcome => {
+  const sealedPackages = validateForwardBaseSelectionOriginPackages(packages);
   const sweep: ForwardBaseSelectionSweepEntry[] = [];
   const resultsByLambda = new Map<number, ForwardBaseModelEvaluationResult[]>();
   for (const lambda of lambdaCandidates) {
     const configurationPackage = buildCandidateConfiguration(lambda);
     const results = FORWARD_BASE_EVAL_SELECTION_DEFINITIONS.map((definition) =>
-      runForwardBaseEvaluation(packages, definition, configurationPackage),
+      runForwardBaseEvaluation(sealedPackages, definition, configurationPackage),
     );
     resultsByLambda.set(lambda, results);
     sweep.push({
