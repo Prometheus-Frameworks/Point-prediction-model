@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   FITTED_FORWARD_RIDGE_ARTIFACT_VERSION,
   FORWARD_RIDGE_CONFIGURATION_SCHEMA_VERSION,
@@ -19,7 +20,6 @@ import {
   FORWARD_BASE_EVAL_SOURCE_COMMIT,
   FORWARD_BASE_EVAL_SOURCE_REPOSITORY,
   FORWARD_BASE_EVAL_SOURCE_SHA256,
-  type ForwardBaseEvalOriginPackages,
 } from './forwardBaseEvaluation.js';
 
 export const FORWARD_BASE_FREEZE_RECORD_SCHEMA_VERSION =
@@ -37,16 +37,61 @@ export const FORWARD_BASE_EVALUATION_ARTIFACT_ID =
 export const FORWARD_BASE_EVALUATION_ARTIFACT_PATH =
   'data/experiments/forwardBaseEval/forward_base_model_evaluation_v1.json' as const;
 
-/**
- * Exact Forecast commit that produced the historical evaluation evidence and
- * runtime configuration frozen by this record. The record itself is assembled
- * as a follow-up commit, so pinning this parent avoids an impossible
- * self-referential commit hash while preserving the executed code identity.
- */
-export const FORWARD_BASE_EVALUATION_IMPLEMENTATION_COMMIT =
+/** Exact commit that produced the approved, byte-pinned evaluation report. */
+export const FORWARD_BASE_HISTORICAL_EVALUATION_PRODUCER_COMMIT =
   'dc1816d01e9163ec3acaa86105203e4b48c640d3' as const;
 export const FORWARD_BASE_RUNTIME_BASE_COMMIT =
   '640c0419170a96775362617cabcf8048c020c901' as const;
+export const FORWARD_BASE_RUNTIME_CONFIGURATION_ARTIFACT_SHA256 =
+  '5d6a963bf15975a65cfdd6e3d6f440f56ea6213ec04bf31b4a985b4d0fc6427a' as const;
+export const FORWARD_BASE_FROZEN_CONFIGURATION_SHA256 =
+  '6bb7323cdc11786a13b5ca92c66f1e72b34c9387cc4760b6f293c95b3682ad1c' as const;
+export const FORWARD_BASE_ORIGIN_PACKAGES_ARTIFACT_SHA256 =
+  'ac0f9c7a8f541f1f8a64eb18ebebaaaa52704636ad5e7afdfe2b45366eb4e796' as const;
+export const FORWARD_BASE_HISTORICAL_EVALUATION_ARTIFACT_SHA256 =
+  '04fae89ae324b0341c60870ce1f9e0fb3812eab045585862a946a80824610971' as const;
+
+/**
+ * Exact load-bearing source/configuration files whose raw bytes must match the
+ * governed implementation commit. The final freeze record is added only in a
+ * child commit, avoiding a self-referential commit identity.
+ */
+export const FORWARD_BASE_GOVERNED_IMPLEMENTATION_PATHS = [
+  'package.json',
+  'package-lock.json',
+  'tsconfig.json',
+  'scripts/runForwardBaseEvalBuild.ts',
+  'scripts/runForwardBaseModelEvaluation.ts',
+  'src/contracts/forwardSeasonalPpr.ts',
+  'src/contracts/scoring.ts',
+  'src/contracts/seasonalPprBacktest.ts',
+  'src/datasets/seasonal/evaluateSeasonalPpr.ts',
+  'src/experiments/forwardBaseEval/forwardBaseEvaluation.ts',
+  'src/experiments/forwardBaseEval/forwardBaseFreezeRecord.ts',
+  'src/models/seasonal/forwardRidgeModel.ts',
+  'src/models/seasonal/linearAlgebra.ts',
+  'src/serialization/canonicalForwardArtifacts.ts',
+] as const;
+
+export type ForwardBaseGovernedImplementationPath =
+  (typeof FORWARD_BASE_GOVERNED_IMPLEMENTATION_PATHS)[number];
+
+export interface ForwardBaseGovernedImplementationSource {
+  commit: string;
+  files: Array<{
+    path: ForwardBaseGovernedImplementationPath;
+    bytes: Uint8Array;
+  }>;
+}
+
+export interface ForwardBaseGovernedImplementationIdentity {
+  repository: 'Prometheus-Frameworks/TIBER-Forecast';
+  commit: string;
+  files: Array<{
+    path: ForwardBaseGovernedImplementationPath;
+    sha256: string;
+  }>;
+}
 
 const DATA_PROFILE_DEFINITION_SHA256 =
   'b1404afb1c7c6c9760b36090e5a84ef3fd2a29dfe8ba2e2fe0efb98d0ac6622e' as const;
@@ -69,10 +114,54 @@ const EXCLUDED_FEATURE_FAMILIES = [
   'league_specific_scoring',
 ] as const;
 
+const sha256Bytes = (bytes: Uint8Array): string =>
+  createHash('sha256').update(bytes).digest('hex');
+
+const isLowercaseSha256 = (value: unknown): value is string =>
+  typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+
+export const buildForwardBaseGovernedImplementationIdentity = (
+  source: ForwardBaseGovernedImplementationSource,
+): ForwardBaseGovernedImplementationIdentity => {
+  if (!/^[0-9a-f]{40}$/.test(source.commit)) {
+    throw new ForwardBaseFreezeRecordError(
+      'governed implementation commit must be lowercase 40-character git SHA-1 hex.',
+    );
+  }
+  const byPath = new Map<string, Uint8Array>();
+  for (const file of source.files) {
+    if (byPath.has(file.path)) {
+      throw new ForwardBaseFreezeRecordError(
+        `duplicate governed implementation path: ${file.path}.`,
+      );
+    }
+    if (!(file.bytes instanceof Uint8Array)) {
+      throw new ForwardBaseFreezeRecordError(
+        `governed implementation bytes are missing for ${file.path}.`,
+      );
+    }
+    byPath.set(file.path, file.bytes);
+  }
+  const actualPaths = [...byPath.keys()].sort();
+  const expectedPaths = [...FORWARD_BASE_GOVERNED_IMPLEMENTATION_PATHS].sort();
+  if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
+    throw new ForwardBaseFreezeRecordError(
+      'governed implementation files must match the complete load-bearing path set.',
+    );
+  }
+  return {
+    repository: 'Prometheus-Frameworks/TIBER-Forecast',
+    commit: source.commit,
+    files: FORWARD_BASE_GOVERNED_IMPLEMENTATION_PATHS.map((filePath) => ({
+      path: filePath,
+      sha256: sha256Bytes(byPath.get(filePath)!),
+    })),
+  };
+};
+
 const buildRecordValue = (input: {
   runtimeConfiguration: FrozenForwardRidgeConfigurationPackageV1;
-  originPackagesSha256: string;
-  historicalEvaluationSha256: string;
+  governedImplementation: ForwardBaseGovernedImplementationIdentity;
 }) => ({
   freeze_record_schema_version: FORWARD_BASE_FREEZE_RECORD_SCHEMA_VERSION,
   freeze_record_id: 'forecast-168-forward-base-configuration-freeze-v1',
@@ -80,7 +169,7 @@ const buildRecordValue = (input: {
   authorizing_issue_ref: 'Prometheus-Frameworks/TIBER-Forecast#168',
   runtime_configuration: {
     artifact_path: FORWARD_BASE_RUNTIME_CONFIGURATION_PATH,
-    artifact_sha256: sha256ForwardCanonicalValue(input.runtimeConfiguration),
+    artifact_sha256: FORWARD_BASE_RUNTIME_CONFIGURATION_ARTIFACT_SHA256,
     configuration_sha256: input.runtimeConfiguration.configuration_sha256,
     configuration_package: input.runtimeConfiguration,
   },
@@ -110,7 +199,7 @@ const buildRecordValue = (input: {
     supported_positions: [...FORWARD_BASE_EVAL_POSITIONS],
     origin_packages_artifact_id: 'forward_base_eval_origin_pairs_v1',
     origin_packages_path: FORWARD_BASE_ORIGIN_PACKAGES_PATH,
-    origin_packages_sha256: input.originPackagesSha256,
+    origin_packages_sha256: FORWARD_BASE_ORIGIN_PACKAGES_ARTIFACT_SHA256,
   },
   preprocessing_and_standardization: {
     ordered_numeric_features:
@@ -163,10 +252,10 @@ const buildRecordValue = (input: {
     {
       artifact_id: FORWARD_BASE_EVALUATION_ARTIFACT_ID,
       artifact_path: FORWARD_BASE_EVALUATION_ARTIFACT_PATH,
-      artifact_sha256: input.historicalEvaluationSha256,
+      artifact_sha256: FORWARD_BASE_HISTORICAL_EVALUATION_ARTIFACT_SHA256,
       authorizing_issue_ref: 'Prometheus-Frameworks/TIBER-Forecast#168',
-      evaluation_implementation_commit:
-        FORWARD_BASE_EVALUATION_IMPLEMENTATION_COMMIT,
+      historical_evaluation_producer_commit:
+        FORWARD_BASE_HISTORICAL_EVALUATION_PRODUCER_COMMIT,
       approval_scope:
         'operator_authorized_historical_configuration_freeze_evidence',
     },
@@ -174,8 +263,9 @@ const buildRecordValue = (input: {
   excluded_feature_families: [...EXCLUDED_FEATURE_FAMILIES],
   software_and_schema_identity: {
     repository: 'Prometheus-Frameworks/TIBER-Forecast',
-    evaluation_implementation_commit:
-      FORWARD_BASE_EVALUATION_IMPLEMENTATION_COMMIT,
+    governed_protocol_implementation: input.governedImplementation,
+    historical_evaluation_producer_commit:
+      FORWARD_BASE_HISTORICAL_EVALUATION_PRODUCER_COMMIT,
     runtime_base_commit: FORWARD_BASE_RUNTIME_BASE_COMMIT,
     configuration_schema_version: FORWARD_RIDGE_CONFIGURATION_SCHEMA_VERSION,
     historical_training_row_schema_version:
@@ -214,9 +304,10 @@ export interface ForwardBaseConfigurationFreezeRecordPackageV1 {
 }
 
 export interface ForwardBaseFreezeRecordDependencies {
-  runtimeConfiguration: FrozenForwardRidgeConfigurationPackageV1;
-  originPackages: ForwardBaseEvalOriginPackages;
-  historicalEvaluation: unknown;
+  runtimeConfigurationBytes: Uint8Array;
+  originPackagesBytes: Uint8Array;
+  historicalEvaluationBytes: Uint8Array;
+  governedImplementation: ForwardBaseGovernedImplementationSource;
 }
 
 export type ForwardBaseFreezeRecordValidationResult =
@@ -236,8 +327,7 @@ export class ForwardBaseFreezeRecordError extends Error {
 
 export const buildForwardBaseConfigurationFreezeRecord = (input: {
   runtimeConfiguration: FrozenForwardRidgeConfigurationPackageV1;
-  originPackagesSha256: string;
-  historicalEvaluationSha256: string;
+  governedImplementation: ForwardBaseGovernedImplementationIdentity;
 }): ForwardBaseConfigurationFreezeRecordPackageV1 => {
   const runtimeValidation = validateFrozenForwardRidgeConfiguration(
     input.runtimeConfiguration,
@@ -247,18 +337,41 @@ export const buildForwardBaseConfigurationFreezeRecord = (input: {
       `runtime configuration is invalid: ${runtimeValidation.errors.join('; ')}`,
     );
   }
-  for (const [field, value] of [
-    ['originPackagesSha256', input.originPackagesSha256],
-    ['historicalEvaluationSha256', input.historicalEvaluationSha256],
-  ] as const) {
-    if (!/^[0-9a-f]{64}$/.test(value)) {
-      throw new ForwardBaseFreezeRecordError(`${field} must be lowercase sha256 hex.`);
-    }
+  if (
+    sha256ForwardCanonicalValue(runtimeValidation.data) !==
+    FORWARD_BASE_RUNTIME_CONFIGURATION_ARTIFACT_SHA256
+  ) {
+    throw new ForwardBaseFreezeRecordError(
+      'runtime configuration bytes do not match the immutable v1 artifact hash.',
+    );
+  }
+  if (
+    runtimeValidation.data.configuration_sha256 !==
+    FORWARD_BASE_FROZEN_CONFIGURATION_SHA256
+  ) {
+    throw new ForwardBaseFreezeRecordError(
+      'runtime configuration identity does not match the approved v1 selection.',
+    );
+  }
+  if (
+    input.governedImplementation.repository !==
+      'Prometheus-Frameworks/TIBER-Forecast' ||
+    !/^[0-9a-f]{40}$/.test(input.governedImplementation.commit) ||
+    input.governedImplementation.files.length !==
+      FORWARD_BASE_GOVERNED_IMPLEMENTATION_PATHS.length ||
+    input.governedImplementation.files.some(
+      (file, index) =>
+        file.path !== FORWARD_BASE_GOVERNED_IMPLEMENTATION_PATHS[index] ||
+        !isLowercaseSha256(file.sha256),
+    )
+  ) {
+    throw new ForwardBaseFreezeRecordError(
+      'governed implementation identity is malformed or incomplete.',
+    );
   }
   const freezeRecord = buildRecordValue({
     runtimeConfiguration: runtimeValidation.data,
-    originPackagesSha256: input.originPackagesSha256,
-    historicalEvaluationSha256: input.historicalEvaluationSha256,
+    governedImplementation: input.governedImplementation,
   });
   return {
     freeze_record_sha256: sha256ForwardCanonicalValue(freezeRecord),
@@ -278,15 +391,96 @@ const deepFreeze = <T>(value: T): T => {
   return value;
 };
 
+const parseJsonBytes = (
+  bytes: Uint8Array,
+  label: string,
+  errors: string[],
+): unknown => {
+  if (!(bytes instanceof Uint8Array)) {
+    errors.push(`${label} dependency must be supplied as raw bytes.`);
+    return null;
+  }
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
+  } catch (error) {
+    errors.push(
+      `${label} dependency is not valid UTF-8 JSON: ${
+        error instanceof Error ? error.message : 'unknown error'
+      }.`,
+    );
+    return null;
+  }
+};
+
+const asObject = (value: unknown): Record<string, unknown> | null =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const verifyOriginPackageSemantics = (
+  value: unknown,
+  errors: string[],
+): void => {
+  const origin = asObject(value);
+  const source = asObject(origin?.source);
+  if (
+    origin?.artifact_id !== 'forward_base_eval_origin_pairs_v1' ||
+    !Array.isArray(origin.pairs) ||
+    origin.pairs.length !== 4 ||
+    source?.repository !== FORWARD_BASE_EVAL_SOURCE_REPOSITORY ||
+    source?.commit !== FORWARD_BASE_EVAL_SOURCE_COMMIT ||
+    source?.path !== FORWARD_BASE_EVAL_SOURCE_ARTIFACT_PATH ||
+    source?.sha256 !== FORWARD_BASE_EVAL_SOURCE_SHA256
+  ) {
+    errors.push(
+      'supplied origin-package bytes do not match the governed v1 source identity and four-pair protocol.',
+    );
+  }
+};
+
+const verifyHistoricalEvaluationSemantics = (
+  value: unknown,
+  runtimeConfiguration: FrozenForwardRidgeConfigurationPackageV1 | null,
+  errors: string[],
+): void => {
+  const report = asObject(value);
+  const selection = asObject(report?.selection);
+  const final = asObject(report?.final);
+  const protocol = asObject(report?.protocol);
+  if (
+    report?.artifact_id !== FORWARD_BASE_EVALUATION_ARTIFACT_ID ||
+    report?.terminal_decision !== 'forward_base_model_configuration_frozen' ||
+    report?.origin_packages_sha256 !==
+      FORWARD_BASE_ORIGIN_PACKAGES_ARTIFACT_SHA256 ||
+    !runtimeConfiguration ||
+    report?.frozen_configuration_sha256 !==
+      runtimeConfiguration.configuration_sha256 ||
+    selection?.selected_lambda !== runtimeConfiguration.configuration.lambda ||
+    final?.configuration_sha256 !== runtimeConfiguration.configuration_sha256 ||
+    final?.lambda !== runtimeConfiguration.configuration.lambda ||
+    final?.eval_id !== FORWARD_BASE_EVAL_FINAL_DEFINITION.eval_id ||
+    !Array.isArray(protocol?.lambda_candidates) ||
+    canonicalForwardJson(protocol?.lambda_candidates) !==
+      canonicalForwardJson(FORWARD_BASE_EVAL_LAMBDA_CANDIDATES) ||
+    protocol?.selection_rule !== SELECTION_RULE ||
+    protocol?.continuation_rule !== CONTINUATION_RULE
+  ) {
+    errors.push(
+      'approved historical evaluation does not agree with the embedded selected lambda, configuration hash, origin package, and frozen protocol.',
+    );
+  }
+};
+
 /**
- * Verify the self-hash, the complete fixed record shape, the embedded runtime
- * configuration, and—when dependencies are supplied—the exact external origin
- * and evaluation artifacts. Later consumers can therefore verify the whole
- * freeze identity rather than trusting the runtime configuration hash alone.
+ * Verify the self-hash, fixed v1 record shape, immutable artifact hashes,
+ * semantic agreement between the approved evaluation and embedded runtime
+ * configuration, and exact raw dependency bytes. The implementation dependency
+ * must be loaded from the recorded commit (the runner and tests use `git show`)
+ * so the commit pin and every load-bearing source hash are both checked.
  */
 export const validateForwardBaseConfigurationFreezeRecord = (
   value: unknown,
-  dependencies?: ForwardBaseFreezeRecordDependencies,
+  dependencies: ForwardBaseFreezeRecordDependencies,
 ): ForwardBaseFreezeRecordValidationResult => {
   const errors: string[] = [];
   let isolated: unknown;
@@ -315,21 +509,14 @@ export const validateForwardBaseConfigurationFreezeRecord = (
       'freeze record package keys must be exactly freeze_record and freeze_record_sha256.',
     );
   }
-  if (
-    typeof packageValue.freeze_record_sha256 !== 'string' ||
-    !/^[0-9a-f]{64}$/.test(packageValue.freeze_record_sha256)
-  ) {
+  if (!isLowercaseSha256(packageValue.freeze_record_sha256)) {
     errors.push('freeze_record_sha256 must be lowercase sha256 hex.');
   }
-  if (
-    typeof packageValue.freeze_record !== 'object' ||
-    packageValue.freeze_record === null ||
-    Array.isArray(packageValue.freeze_record)
-  ) {
+  const record = asObject(packageValue.freeze_record);
+  if (!record) {
     errors.push('freeze_record must be an object.');
     return { ok: false, errors };
   }
-  const record = packageValue.freeze_record as Record<string, unknown>;
   if (
     typeof packageValue.freeze_record_sha256 === 'string' &&
     sha256ForwardCanonicalValue(record) !== packageValue.freeze_record_sha256
@@ -337,104 +524,141 @@ export const validateForwardBaseConfigurationFreezeRecord = (
     errors.push('freeze record self-hash does not match its canonical bytes.');
   }
 
-  const runtimeContainer = record.runtime_configuration;
-  const population = record.governed_population_identity;
+  const runtimeContainer = asObject(record.runtime_configuration);
+  const population = asObject(record.governed_population_identity);
   const evaluationRefs = record.approved_historical_evaluation_refs;
-  if (
-    typeof runtimeContainer !== 'object' ||
-    runtimeContainer === null ||
-    Array.isArray(runtimeContainer)
-  ) {
+  const softwareIdentity = asObject(record.software_and_schema_identity);
+  const governedImplementation = asObject(
+    softwareIdentity?.governed_protocol_implementation,
+  );
+  if (!runtimeContainer) {
     errors.push('freeze record runtime_configuration is malformed.');
   }
-  if (
-    typeof population !== 'object' ||
-    population === null ||
-    Array.isArray(population)
-  ) {
+  if (!population) {
     errors.push('freeze record governed_population_identity is malformed.');
   }
   if (!Array.isArray(evaluationRefs) || evaluationRefs.length !== 1) {
     errors.push('freeze record must contain exactly one approved historical evaluation ref.');
   }
 
-  const runtimePackage =
-    typeof runtimeContainer === 'object' &&
-    runtimeContainer !== null &&
-    !Array.isArray(runtimeContainer)
-      ? (runtimeContainer as Record<string, unknown>).configuration_package
-      : null;
-  const runtimeValidation = validateFrozenForwardRidgeConfiguration(runtimePackage);
+  const runtimeValidation = validateFrozenForwardRidgeConfiguration(
+    runtimeContainer?.configuration_package,
+  );
   if (!runtimeValidation.ok) {
     errors.push(
       `embedded runtime configuration is invalid: ${runtimeValidation.errors.join('; ')}`,
     );
   }
 
-  const originPackagesSha256 =
-    typeof population === 'object' &&
-    population !== null &&
-    !Array.isArray(population)
-      ? (population as Record<string, unknown>).origin_packages_sha256
-      : null;
-  const historicalEvaluationSha256 =
-    Array.isArray(evaluationRefs) &&
-    evaluationRefs.length === 1 &&
-    typeof evaluationRefs[0] === 'object' &&
-    evaluationRefs[0] !== null
-      ? (evaluationRefs[0] as Record<string, unknown>).artifact_sha256
-      : null;
-
-  if (
-    runtimeValidation.ok &&
-    typeof originPackagesSha256 === 'string' &&
-    /^[0-9a-f]{64}$/.test(originPackagesSha256) &&
-    typeof historicalEvaluationSha256 === 'string' &&
-    /^[0-9a-f]{64}$/.test(historicalEvaluationSha256)
-  ) {
-    const expected = buildForwardBaseConfigurationFreezeRecord({
-      runtimeConfiguration: runtimeValidation.data,
-      originPackagesSha256,
-      historicalEvaluationSha256,
-    });
-    if (canonicalForwardJson(expected) !== canonicalForwardJson(packageValue)) {
+  if (runtimeValidation.ok && governedImplementation) {
+    try {
+      const expected = buildForwardBaseConfigurationFreezeRecord({
+        runtimeConfiguration: runtimeValidation.data,
+        governedImplementation:
+          governedImplementation as unknown as ForwardBaseGovernedImplementationIdentity,
+      });
+      if (canonicalForwardJson(expected) !== canonicalForwardJson(packageValue)) {
+        errors.push(
+          'freeze record fields do not match the complete immutable governed v1 record.',
+        );
+      }
+    } catch (error) {
       errors.push(
-        'freeze record fields do not match the complete governed v1 record.',
+        `freeze record fixed-identity validation failed: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }.`,
       );
     }
   } else {
-    errors.push('freeze record dependency hashes are malformed.');
+    errors.push('freeze record governed implementation identity is malformed.');
   }
 
-  if (dependencies) {
-    const dependencyRuntime = validateFrozenForwardRidgeConfiguration(
-      dependencies.runtimeConfiguration,
+  const runtimeBytes = dependencies.runtimeConfigurationBytes;
+  const originBytes = dependencies.originPackagesBytes;
+  const reportBytes = dependencies.historicalEvaluationBytes;
+  if (
+    !(runtimeBytes instanceof Uint8Array) ||
+    sha256Bytes(runtimeBytes) !==
+      FORWARD_BASE_RUNTIME_CONFIGURATION_ARTIFACT_SHA256
+  ) {
+    errors.push(
+      'supplied runtime configuration raw bytes do not match the frozen artifact hash.',
     );
-    if (!dependencyRuntime.ok) {
-      errors.push('supplied runtime configuration dependency is invalid.');
-    } else if (
-      !runtimeValidation.ok ||
-      canonicalForwardJson(dependencyRuntime.data) !==
-        canonicalForwardJson(runtimeValidation.data)
-    ) {
-      errors.push('supplied runtime configuration does not match the embedded package.');
-    }
+  }
+  if (
+    !(originBytes instanceof Uint8Array) ||
+    sha256Bytes(originBytes) !== FORWARD_BASE_ORIGIN_PACKAGES_ARTIFACT_SHA256
+  ) {
+    errors.push(
+      'supplied origin-package raw bytes do not match the frozen artifact hash.',
+    );
+  }
+  if (
+    !(reportBytes instanceof Uint8Array) ||
+    sha256Bytes(reportBytes) !==
+      FORWARD_BASE_HISTORICAL_EVALUATION_ARTIFACT_SHA256
+  ) {
+    errors.push(
+      'supplied historical evaluation raw bytes do not match the frozen artifact hash.',
+    );
+  }
+
+  const dependencyRuntimeValue = parseJsonBytes(
+    runtimeBytes,
+    'runtime configuration',
+    errors,
+  );
+  const dependencyOriginValue = parseJsonBytes(
+    originBytes,
+    'origin packages',
+    errors,
+  );
+  const dependencyReportValue = parseJsonBytes(
+    reportBytes,
+    'historical evaluation',
+    errors,
+  );
+  const dependencyRuntime = validateFrozenForwardRidgeConfiguration(
+    dependencyRuntimeValue,
+  );
+  if (!dependencyRuntime.ok) {
+    errors.push('supplied runtime configuration dependency is semantically invalid.');
+  } else if (
+    !runtimeValidation.ok ||
+    canonicalForwardJson(dependencyRuntime.data) !==
+      canonicalForwardJson(runtimeValidation.data)
+  ) {
+    errors.push(
+      'supplied runtime configuration bytes do not match the embedded package.',
+    );
+  }
+  verifyOriginPackageSemantics(dependencyOriginValue, errors);
+  verifyHistoricalEvaluationSemantics(
+    dependencyReportValue,
+    dependencyRuntime.ok ? dependencyRuntime.data : null,
+    errors,
+  );
+
+  try {
+    const dependencyImplementation =
+      buildForwardBaseGovernedImplementationIdentity(
+        dependencies.governedImplementation,
+      );
     if (
-      typeof originPackagesSha256 === 'string' &&
-      sha256ForwardCanonicalValue(dependencies.originPackages) !==
-        originPackagesSha256
-    ) {
-      errors.push('supplied origin packages do not match the frozen artifact hash.');
-    }
-    if (
-      typeof historicalEvaluationSha256 === 'string' &&
-      sha256ForwardCanonicalValue(dependencies.historicalEvaluation) !==
-        historicalEvaluationSha256
+      !governedImplementation ||
+      canonicalForwardJson(dependencyImplementation) !==
+        canonicalForwardJson(governedImplementation)
     ) {
       errors.push(
-        'supplied historical evaluation does not match the frozen artifact hash.',
+        'supplied governed implementation bytes do not match the recorded commit manifest.',
       );
     }
+  } catch (error) {
+    errors.push(
+      `supplied governed implementation dependency is invalid: ${
+        error instanceof Error ? error.message : 'unknown error'
+      }.`,
+    );
   }
 
   return errors.length > 0

@@ -14,6 +14,7 @@
  *   npx tsx scripts/runForwardBaseModelEvaluation.ts --check    # verify determinism
  */
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import {
@@ -29,10 +30,14 @@ import {
 import {
   FORWARD_BASE_EVALUATION_ARTIFACT_PATH,
   FORWARD_BASE_FREEZE_RECORD_PATH,
+  FORWARD_BASE_GOVERNED_IMPLEMENTATION_PATHS,
   FORWARD_BASE_ORIGIN_PACKAGES_PATH,
   FORWARD_BASE_RUNTIME_CONFIGURATION_PATH,
   buildForwardBaseConfigurationFreezeRecord,
+  buildForwardBaseGovernedImplementationIdentity,
   validateForwardBaseConfigurationFreezeRecord,
+  type ForwardBaseConfigurationFreezeRecordPackageV1,
+  type ForwardBaseGovernedImplementationPath,
 } from '../src/experiments/forwardBaseEval/forwardBaseFreezeRecord.js';
 import { canonicalForwardJsonBytes } from '../src/serialization/canonicalForwardArtifacts.js';
 
@@ -43,6 +48,49 @@ const FROZEN_CONFIG_PATH = FORWARD_BASE_RUNTIME_CONFIGURATION_PATH;
 const FREEZE_RECORD_PATH = FORWARD_BASE_FREEZE_RECORD_PATH;
 
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+
+const argValue = (flag: string): string | null => {
+  const index = process.argv.indexOf(flag);
+  return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : null;
+};
+
+const readRecordedImplementationCommit = (): string | null => {
+  if (!existsSync(FREEZE_RECORD_PATH)) return null;
+  try {
+    const existing = JSON.parse(
+      readFileSync(FREEZE_RECORD_PATH, 'utf8'),
+    ) as ForwardBaseConfigurationFreezeRecordPackageV1;
+    return existing.freeze_record.software_and_schema_identity
+      .governed_protocol_implementation.commit;
+  } catch {
+    return null;
+  }
+};
+
+const governedImplementationCommit =
+  argValue('--governed-implementation-commit') ??
+  readRecordedImplementationCommit();
+if (
+  !governedImplementationCommit ||
+  !/^[0-9a-f]{40}$/.test(governedImplementationCommit)
+) {
+  throw new Error(
+    'a valid --governed-implementation-commit is required until the freeze record carries its non-self-referential code pin.',
+  );
+}
+const governedImplementationSource = {
+  commit: governedImplementationCommit,
+  files: FORWARD_BASE_GOVERNED_IMPLEMENTATION_PATHS.map((filePath) => ({
+    path: filePath as ForwardBaseGovernedImplementationPath,
+    bytes: execFileSync('git', ['show', `${governedImplementationCommit}:${filePath}`], {
+      maxBuffer: 32 * 1024 * 1024,
+    }),
+  })),
+};
+const governedImplementation =
+  buildForwardBaseGovernedImplementationIdentity(
+    governedImplementationSource,
+  );
 
 const packagesBytes = readFileSync(path.resolve(PACKAGES_PATH));
 const packages = JSON.parse(packagesBytes.toString('utf8')) as ForwardBaseEvalOriginPackages;
@@ -130,15 +178,15 @@ const report = {
 const reportBytes = canonicalForwardJsonBytes(report);
 const freezeRecord = buildForwardBaseConfigurationFreezeRecord({
   runtimeConfiguration: frozenConfiguration,
-  originPackagesSha256: sha256(packagesBytes),
-  historicalEvaluationSha256: sha256(reportBytes),
+  governedImplementation,
 });
 const freezeValidation = validateForwardBaseConfigurationFreezeRecord(
   freezeRecord,
   {
-    runtimeConfiguration: frozenConfiguration,
-    originPackages: packages,
-    historicalEvaluation: report,
+    runtimeConfigurationBytes: frozenConfigurationBytes,
+    originPackagesBytes: packagesBytes,
+    historicalEvaluationBytes: reportBytes,
+    governedImplementation: governedImplementationSource,
   },
 );
 if (!freezeValidation.ok) {
