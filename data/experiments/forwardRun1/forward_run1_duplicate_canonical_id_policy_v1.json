@@ -1,0 +1,1 @@
+{"max_rows_per_resolved_canonical_id":1,"policy_id":"forward-run1-duplicate-canonical-id-v1","policy_version":"1.0.0","rule":"fail closed if more than one census row resolves to the same canonical player id; unresolved source identities remain separate visible rows and are not counted as resolved duplicates"}
