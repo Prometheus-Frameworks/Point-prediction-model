@@ -1,0 +1,81 @@
+{
+  "activation_block": {
+    "candidate_only": true,
+    "configuration_sha256": "6bb7323cdc11786a13b5ca92c66f1e72b34c9387cc4760b6f293c95b3682ad1c",
+    "consumer_eligibility": "never",
+    "cross_repo_write": "none",
+    "fitted_training_input_refs": [
+      {
+        "artifact_type": "player_season_coverage_v0",
+        "artifact_version": "player_season_coverage_v0_promoted_v1",
+        "content_sha256": "d45f612b207085df00b4b080e4f55ce1abbd060dcbf30b0bee777ff833ddd8ac",
+        "owner_commit_sha": "3393a8f0b7f4ffa640f63d712768beb1c52b917a",
+        "owner_repository": "Prometheus-Frameworks/TIBER-Data",
+        "scope": "2021-2025 REG QB/RB/WR/TE; exact eight-component derived generic full-PPR targets; promoted season_ppr provenance-only",
+        "uri_or_path": "exports/promoted/nfl/player_season_coverage_v0.json"
+      }
+    ],
+    "forecast_cutoff": "2026-07-28T01:00:00Z",
+    "forecast_repository_commit": "813eff8de0b4a8d4f29f5c37abe522fe3e792ca3",
+    "merge_authority": "operator_only",
+    "model_id": "seasonal-forward-ridge-base",
+    "model_version": "forward-base-eval-v1",
+    "population_census_ref": "Prometheus-Frameworks/TIBER-Data@3393a8f0b7f4ffa640f63d712768beb1c52b917a:exports/candidates/population_census/bounded_2026_population_census_v0.json",
+    "population_census_sha256": "6057031bfc6dfedac1a5b2957ec194e738df5fbdb12dfec80d1e8ad773f0d1ea",
+    "production_ready": false,
+    "runtime_contract_version": "seasonal-fantasy-point-forecast-manifest-v1",
+    "scoring_profile_id": "tiber-generic-full-ppr-v1",
+    "scoring_profile_sha256": "a368b75bf5503558a4f664e0486e2c3cc75c01004d4527fd29ecaa1e247a6274",
+    "scoring_reconciliation_ref": "Prometheus-Frameworks/TIBER-Data@3393a8f0b7f4ffa640f63d712768beb1c52b917a:data/manifests/player_season_coverage_v0_generic_ppr_reconciliation_v1.manifest.json@sha256:83687c3511691c6681139c253f217c3b1d11ca6e7bd87b169f79e1f89da8e52a",
+    "target_season": 2026,
+    "uncertainty_status": "unavailable_not_calibrated"
+  },
+  "artifact_id": "forward_run1_admission_binding_v1",
+  "artifact_version": "1.0.0",
+  "authorizing_comment": "Prometheus-Frameworks/TIBER-Forecast#170 issuecomment-5157636151",
+  "census_binding": {
+    "census_artifact_ref": {
+      "artifact_type": "bounded_2026_population_census_v0",
+      "artifact_version": "bounded_2026_population_census_v0.1.0",
+      "content_sha256": "6057031bfc6dfedac1a5b2957ec194e738df5fbdb12dfec80d1e8ad773f0d1ea",
+      "uri_or_path": "Prometheus-Frameworks/TIBER-Data@3393a8f0b7f4ffa640f63d712768beb1c52b917a:exports/candidates/population_census/bounded_2026_population_census_v0.json"
+    },
+    "census_sha256": "6057031bfc6dfedac1a5b2957ec194e738df5fbdb12dfec80d1e8ad773f0d1ea",
+    "duplicate_canonical_id_policy": {
+      "max_rows_per_resolved_canonical_id": 1,
+      "policy_id": "forward-run1-duplicate-canonical-id-v1",
+      "policy_sha256": "504206dc32c87758e0a5c6c0107e0cb886d891de0b37709c6818e639cf35df29"
+    },
+    "effective_at": "2026-07-28T01:00:00Z",
+    "eligibility_policy_id": "forward-run1-census-eligibility-v1",
+    "eligibility_policy_sha256": "8e743e9fc1669d70c701454cfe68194148fed75e37e95309a3a2e07647fbfcca",
+    "row_count": 658,
+    "scope_definition": "historical_offense_plus_2026_rookies_v0"
+  },
+  "cutoff_availability_rule": "governed repository commit availability controls artifact admission; stricter record-level source availability still applies",
+  "limitations": [
+    "This binding does not execute seasonal-ppr-2026-forward-001.",
+    "This binding does not promote, deploy, publish, rank, advise, or grant consumer eligibility.",
+    "The 48 rookie census rows have no admitted 2025 historical feature row and are expected to remain visible with typed unavailable or identity-unresolved status.",
+    "Scoring profile hash equivalence is governed by docs/decisions/scoring-profile-hash-equivalence-2026-07-28.md.",
+    "Promoted season_ppr totals are provenance-only; model targets are derived from the eight governed components in exact cents."
+  ],
+  "profile_hash_equivalence_ref": "docs/decisions/scoring-profile-hash-equivalence-2026-07-28.md",
+  "scoring_reconciliation_binding": {
+    "evidence_ref": {
+      "artifact_version": "1.0.0",
+      "content_sha256": "83687c3511691c6681139c253f217c3b1d11ca6e7bd87b169f79e1f89da8e52a",
+      "path": "data/manifests/player_season_coverage_v0_generic_ppr_reconciliation_v1.manifest.json",
+      "repository": "Prometheus-Frameworks/TIBER-Data@3393a8f0b7f4ffa640f63d712768beb1c52b917a"
+    },
+    "scoring_profile_sha256": "a368b75bf5503558a4f664e0486e2c3cc75c01004d4527fd29ecaa1e247a6274",
+    "source_input_sha256s": [
+      "d45f612b207085df00b4b080e4f55ce1abbd060dcbf30b0bee777ff833ddd8ac"
+    ],
+    "status": "passed",
+    "validator_id": "tiber-forecast-run1-derived-component-scoring-binding",
+    "validator_version": "1.0.0"
+  },
+  "status": "candidate_admission_binding_not_run_authorization",
+  "terminal_decision": "forward_run1_admission_binding_ready"
+}
