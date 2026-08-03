@@ -15,7 +15,7 @@
         "uri_or_path": "exports/promoted/nfl/player_season_coverage_v0.json"
       }
     ],
-    "forecast_cutoff": "2026-07-28T01:00:00Z",
+    "forecast_cutoff": "2026-07-28T01:00:00.000Z",
     "forecast_repository_commit": "813eff8de0b4a8d4f29f5c37abe522fe3e792ca3",
     "merge_authority": "operator_only",
     "model_id": "seasonal-forward-ridge-base",
