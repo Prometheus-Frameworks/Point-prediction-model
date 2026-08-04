@@ -6,27 +6,44 @@
     "cross_repo_write": "none",
     "fitted_training_input_refs": [
       {
-        "artifact_type": "player_season_coverage_v0",
-        "artifact_version": "player_season_coverage_v0_promoted_v1",
-        "content_sha256": "d45f612b207085df00b4b080e4f55ce1abbd060dcbf30b0bee777ff833ddd8ac",
-        "owner_commit_sha": "3393a8f0b7f4ffa640f63d712768beb1c52b917a",
-        "owner_repository": "Prometheus-Frameworks/TIBER-Data",
+        "artifact_file_sha256": "2d17752fedccbdf544ac07e57b9530840f3d230f3e5a4886fdd816b5052db990",
+        "artifact_type": "forward_historical_training_package",
+        "artifact_version": "forward-run1-v1",
+        "content_sha256": "6e131681ceac3a1a61daccab07109dd5281d5260d885a6427dde45e6caf571ba",
+        "input_id": "tiber-data-player-season-coverage-v0-historical-training",
+        "owner_commit_sha": "f9b10354a45152685016a05bba930eade416a8f5",
+        "owner_repository": "Prometheus-Frameworks/TIBER-Forecast",
+        "raw_source_sha256": "d45f612b207085df00b4b080e4f55ce1abbd060dcbf30b0bee777ff833ddd8ac",
         "scope": "2021-2025 REG QB/RB/WR/TE; exact eight-component derived generic full-PPR targets; promoted season_ppr provenance-only",
-        "uri_or_path": "exports/promoted/nfl/player_season_coverage_v0.json"
+        "uri_or_path": "data/experiments/forwardRun1/forward_run1_historical_training_package_v1.json"
       }
     ],
-    "forecast_cutoff": "2026-07-28T01:00:00.000Z",
+    "forecast_cutoff": "2026-07-29T22:16:02.000Z",
     "forecast_repository_commit": "813eff8de0b4a8d4f29f5c37abe522fe3e792ca3",
+    "future_feature_input_refs": [
+      {
+        "artifact_file_sha256": "580adef9f96aa88b95c7cf742bcbeb289fc9c244a2db9efdd0a836b31036f3b8",
+        "artifact_type": "forward_future_feature_package",
+        "artifact_version": "forward-run1-v1",
+        "content_sha256": "d91996ed97c98fc0613c717a11657610a4a4ac15b2383d8b34f86c3ee72fdf0d",
+        "input_id": "tiber-data-player-season-coverage-v0-features",
+        "owner_commit_sha": "f9b10354a45152685016a05bba930eade416a8f5",
+        "owner_repository": "Prometheus-Frameworks/TIBER-Forecast",
+        "raw_source_sha256": "d45f612b207085df00b4b080e4f55ce1abbd060dcbf30b0bee777ff833ddd8ac",
+        "scope": "610 exact 2025 historical-offense census rows transformed to target-free 2026 scoring features; 48 rookies remain absent rather than imputed",
+        "uri_or_path": "data/experiments/forwardRun1/forward_run1_future_feature_package_v1.json"
+      }
+    ],
     "merge_authority": "operator_only",
     "model_id": "seasonal-forward-ridge-base",
     "model_version": "forward-base-eval-v1",
-    "population_census_ref": "Prometheus-Frameworks/TIBER-Data@3393a8f0b7f4ffa640f63d712768beb1c52b917a:exports/candidates/population_census/bounded_2026_population_census_v0.json",
-    "population_census_sha256": "6057031bfc6dfedac1a5b2957ec194e738df5fbdb12dfec80d1e8ad773f0d1ea",
+    "population_census_ref": "data/experiments/forwardRun1/forward_run1_population_census_package_v1.json",
+    "population_census_sha256": "ed93d3519c7b9dbccd6fec35ce53bb6c46f7675c698870fc721b4992f32765b4",
     "production_ready": false,
     "runtime_contract_version": "seasonal-fantasy-point-forecast-manifest-v1",
     "scoring_profile_id": "tiber-generic-full-ppr-v1",
     "scoring_profile_sha256": "a368b75bf5503558a4f664e0486e2c3cc75c01004d4527fd29ecaa1e247a6274",
-    "scoring_reconciliation_ref": "Prometheus-Frameworks/TIBER-Data@3393a8f0b7f4ffa640f63d712768beb1c52b917a:data/manifests/player_season_coverage_v0_generic_ppr_reconciliation_v1.manifest.json@sha256:83687c3511691c6681139c253f217c3b1d11ca6e7bd87b169f79e1f89da8e52a",
+    "scoring_reconciliation_ref": "data/experiments/forwardRun1/forward_run1_package_admission_evidence_v1.json@sha256:49ec15bad0127718222937955beccfbef5a01132998b8bf98134206aaaf6568d",
     "target_season": 2026,
     "uncertainty_status": "unavailable_not_calibrated"
   },
@@ -35,42 +52,72 @@
   "authorizing_comment": "Prometheus-Frameworks/TIBER-Forecast#170 issuecomment-5157636151",
   "census_binding": {
     "census_artifact_ref": {
-      "artifact_type": "bounded_2026_population_census_v0",
-      "artifact_version": "bounded_2026_population_census_v0.1.0",
-      "content_sha256": "6057031bfc6dfedac1a5b2957ec194e738df5fbdb12dfec80d1e8ad773f0d1ea",
-      "uri_or_path": "Prometheus-Frameworks/TIBER-Data@3393a8f0b7f4ffa640f63d712768beb1c52b917a:exports/candidates/population_census/bounded_2026_population_census_v0.json"
+      "artifact_file_sha256": "1f18456cb449a5a55c3016c7c80f14b580e7e25a0819b7f8afe97904b7f91bad",
+      "artifact_type": "forward_population_census_package",
+      "artifact_version": "forward-run1-v1",
+      "content_sha256": "ed93d3519c7b9dbccd6fec35ce53bb6c46f7675c698870fc721b4992f32765b4",
+      "input_id": "tiber-data-bounded-2026-population-census-v0",
+      "owner_commit_sha": "f9b10354a45152685016a05bba930eade416a8f5",
+      "owner_repository": "Prometheus-Frameworks/TIBER-Forecast",
+      "uri_or_path": "data/experiments/forwardRun1/forward_run1_population_census_package_v1.json"
     },
-    "census_sha256": "6057031bfc6dfedac1a5b2957ec194e738df5fbdb12dfec80d1e8ad773f0d1ea",
+    "census_sha256": "ed93d3519c7b9dbccd6fec35ce53bb6c46f7675c698870fc721b4992f32765b4",
     "duplicate_canonical_id_policy": {
       "max_rows_per_resolved_canonical_id": 1,
       "policy_id": "forward-run1-duplicate-canonical-id-v1",
       "policy_sha256": "504206dc32c87758e0a5c6c0107e0cb886d891de0b37709c6818e639cf35df29"
     },
-    "effective_at": "2026-07-28T01:00:00Z",
+    "effective_at": "2026-07-29T22:16:02.000Z",
     "eligibility_policy_id": "forward-run1-census-eligibility-v1",
-    "eligibility_policy_sha256": "8e743e9fc1669d70c701454cfe68194148fed75e37e95309a3a2e07647fbfcca",
+    "eligibility_policy_sha256": "dad50a5445cda84ac5c100ef27dcb50c0137ba0b74b0c8e1a007e2c914106766",
     "row_count": 658,
-    "scope_definition": "historical_offense_plus_2026_rookies_v0"
+    "scope_definition": "historical_offense_plus_2026_rookies_v0",
+    "source_census_artifact_ref": {
+      "artifact_type": "bounded_2026_population_census_v0",
+      "artifact_version": "bounded_2026_population_census_v0.1.0",
+      "content_sha256": "6057031bfc6dfedac1a5b2957ec194e738df5fbdb12dfec80d1e8ad773f0d1ea",
+      "uri_or_path": "Prometheus-Frameworks/TIBER-Data@3393a8f0b7f4ffa640f63d712768beb1c52b917a:exports/candidates/population_census/bounded_2026_population_census_v0.json"
+    }
   },
-  "cutoff_availability_rule": "governed repository commit availability controls artifact admission; stricter record-level source availability still applies",
+  "cutoff_dependency_evidence": {
+    "controlling_dependency": "forecast_repository_commit",
+    "data_commit_available_at": "2026-07-28T00:47:06.000Z",
+    "data_repository_commit": "3393a8f0b7f4ffa640f63d712768beb1c52b917a",
+    "forecast_commit_available_at": "2026-07-29T22:16:02.000Z",
+    "forecast_repository_commit": "813eff8de0b4a8d4f29f5c37abe522fe3e792ca3",
+    "package_artifact_generated_at": "2026-08-04T22:11:03.000Z",
+    "package_materializer_implementation_commit": "f9b10354a45152685016a05bba930eade416a8f5",
+    "selection_rule": "earliest canonical UTC instant not earlier than every knowledge-bearing Data and frozen runtime/configuration dependency; later deterministic wrapper generation does not expand knowledge"
+  },
+  "cutoff_availability_rule": "governed repository commit availability controls source-fact admission; a post-cutoff deterministic wrapper is eligible only when every used fact is pinned by cutoff_records at or before the cutoff, and wrapper generated_at is never substituted for source availability",
   "limitations": [
     "This binding does not execute seasonal-ppr-2026-forward-001.",
     "This binding does not promote, deploy, publish, rank, advise, or grant consumer eligibility.",
+    "Runtime package content_sha256 values hash canonical {payload, cutoff_records} bytes via computeForwardPinnedPackageSha256; raw Data artifact hashes remain separate provenance only.",
+    "The wrapper packages are Forecast-owned, use local package paths, preserve raw Data ownership in evidence refs, and set source_as_of to null because no package-level domain time is available.",
+    "Package materialization occurred after the knowledge cutoff and did not add or alter a source fact, model rule, configuration, scoring rule, or population member.",
     "The 48 rookie census rows have no admitted 2025 historical feature row and are expected to remain visible with typed unavailable or identity-unresolved status.",
     "Scoring profile hash equivalence is governed by docs/decisions/scoring-profile-hash-equivalence-2026-07-28.md.",
     "Promoted season_ppr totals are provenance-only; model targets are derived from the eight governed components in exact cents."
   ],
+  "package_admission_evidence": {
+    "artifact_file_sha256": "49ec15bad0127718222937955beccfbef5a01132998b8bf98134206aaaf6568d",
+    "artifact_generated_at": "2026-08-04T22:11:03.000Z",
+    "materializer_implementation_commit_sha": "f9b10354a45152685016a05bba930eade416a8f5",
+    "uri_or_path": "data/experiments/forwardRun1/forward_run1_package_admission_evidence_v1.json"
+  },
   "profile_hash_equivalence_ref": "docs/decisions/scoring-profile-hash-equivalence-2026-07-28.md",
   "scoring_reconciliation_binding": {
     "evidence_ref": {
-      "artifact_version": "1.0.0",
-      "content_sha256": "83687c3511691c6681139c253f217c3b1d11ca6e7bd87b169f79e1f89da8e52a",
-      "path": "data/manifests/player_season_coverage_v0_generic_ppr_reconciliation_v1.manifest.json",
-      "repository": "Prometheus-Frameworks/TIBER-Data@3393a8f0b7f4ffa640f63d712768beb1c52b917a"
+      "artifact_version": "forward-run1-package-admission-evidence-v1",
+      "content_sha256": "49ec15bad0127718222937955beccfbef5a01132998b8bf98134206aaaf6568d",
+      "path": "data/experiments/forwardRun1/forward_run1_package_admission_evidence_v1.json",
+      "repository": "Prometheus-Frameworks/TIBER-Forecast"
     },
     "scoring_profile_sha256": "a368b75bf5503558a4f664e0486e2c3cc75c01004d4527fd29ecaa1e247a6274",
     "source_input_sha256s": [
-      "d45f612b207085df00b4b080e4f55ce1abbd060dcbf30b0bee777ff833ddd8ac"
+      "6e131681ceac3a1a61daccab07109dd5281d5260d885a6427dde45e6caf571ba",
+      "d91996ed97c98fc0613c717a11657610a4a4ac15b2383d8b34f86c3ee72fdf0d"
     ],
     "status": "passed",
     "validator_id": "tiber-forecast-run1-derived-component-scoring-binding",
