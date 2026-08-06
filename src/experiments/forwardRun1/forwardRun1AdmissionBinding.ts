@@ -616,11 +616,23 @@ export const buildForwardRun1FutureFeaturePackage = (
     uri_or_path: FORWARD_RUN1_FUTURE_FEATURE_PACKAGE_PATH,
     content: {
       payload: { rows },
-      cutoff_records: [dataCommitCutoffRecord(
-        inputId,
-        FORWARD_BASE_EVAL_SOURCE_ARTIFACT_PATH,
-        FORWARD_BASE_EVAL_SOURCE_SHA256,
-      )],
+      // Every knowledge-bearing source of this package carries its own
+      // cutoff record: the coverage artifact supplies the feature values and
+      // the census scopes the rows (population_row_id, canonical_player_id,
+      // position). Both are pinned at the same governed Data commit and
+      // availability instant.
+      cutoff_records: [
+        dataCommitCutoffRecord(
+          inputId,
+          FORWARD_BASE_EVAL_SOURCE_ARTIFACT_PATH,
+          FORWARD_BASE_EVAL_SOURCE_SHA256,
+        ),
+        dataCommitCutoffRecord(
+          inputId,
+          FORWARD_RUN1_CENSUS_SOURCE_PATH,
+          FORWARD_RUN1_CENSUS_SOURCE_SHA256,
+        ),
+      ],
     },
     feature_names_admitted: featureNames(frozenConfiguration),
     source_timestamp_locator: 'content.cutoff_records[].fact_available_at',
