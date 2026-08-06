@@ -23,15 +23,15 @@ This decision means the exact operator dispositions recorded on TIBER-Forecast #
 - Configuration SHA-256: `6bb7323cdc11786a13b5ca92c66f1e72b34c9387cc4760b6f293c95b3682ad1c`
 - Forecast cutoff: `2026-07-29T22:16:02.000Z`
 - Historical-training runtime content SHA-256: `6e131681ceac3a1a61daccab07109dd5281d5260d885a6427dde45e6caf571ba`
-- Future-feature runtime content SHA-256: `d91996ed97c98fc0613c717a11657610a4a4ac15b2383d8b34f86c3ee72fdf0d`
+- Future-feature runtime content SHA-256: `7c23a1b562a0bc7909cb560e13ce88faf8943c747b71216e92cf228bb7b1cb52`
 - Census runtime content SHA-256: `ed93d3519c7b9dbccd6fec35ce53bb6c46f7675c698870fc721b4992f32765b4`
 - Raw Data training/feature source SHA-256 (provenance only): `d45f612b207085df00b4b080e4f55ce1abbd060dcbf30b0bee777ff833ddd8ac`
 - Raw Data census source SHA-256 (provenance only): `6057031bfc6dfedac1a5b2957ec194e738df5fbdb12dfec80d1e8ad773f0d1ea`
 - Data scoring manifest SHA-256: `83687c3511691c6681139c253f217c3b1d11ca6e7bd87b169f79e1f89da8e52a`
 - Forecast scoring profile SHA-256: `a368b75bf5503558a4f664e0486e2c3cc75c01004d4527fd29ecaa1e247a6274`
-- Package materializer implementation commit: `f9b10354a45152685016a05bba930eade416a8f5`
-- Package artifact generation time: `2026-08-04T22:11:03.000Z`
-- Package-admission evidence file SHA-256: `49ec15bad0127718222937955beccfbef5a01132998b8bf98134206aaaf6568d`
+- Package materializer implementation commit: `8fd449a56f335ea10664916fdca069beff9107f9`
+- Package artifact generation time: `2026-08-06T14:38:23.000Z`
+- Package-admission evidence file SHA-256: `9957c0f715a8628599da34eb94b2455b033376f6a92a78de06c31895132627a5`
 
 ## Cutoff correction
 
@@ -43,7 +43,7 @@ The original `2026-07-28T01:00:00.000Z` cutoff preceded the authoritative Foreca
 
 The controlling knowledge-bearing maximum is the frozen Forecast commit. Therefore `2026-07-29T22:16:02.000Z` is the earliest canonical UTC cutoff not earlier than every selected Data, configuration, and execution-source dependency. All governed cutoff/effective-time echoes use that exact millisecond-bearing form.
 
-The wrapper packages were operationally materialized later, at `2026-08-04T22:11:03.000Z`, by the separate implementation commit `f9b1035…`. That later generation does not add a model fact or expand the knowledge cutoff: each package hashes canonical `{payload, cutoff_records}`, and every cutoff record still points to the exact Data bytes available by `2026-07-28T00:47:06.000Z`. This is the contract’s explicit post-cutoff-package rule, not a substitution of generation time for source availability.
+The wrapper packages were operationally materialized later, at `2026-08-06T14:38:23.000Z`, by the separate implementation commit `8fd449a…`. That later generation does not add a model fact or expand the knowledge cutoff: each package hashes canonical `{payload, cutoff_records}`, and every cutoff record still points to the exact Data bytes available by `2026-07-28T00:47:06.000Z`. This is the contract’s explicit post-cutoff-package rule, not a substitution of generation time for source availability.
 
 ## Exact runtime packages
 
@@ -51,11 +51,13 @@ The wrapper packages were operationally materialized later, at `2026-08-04T22:11
 
 | Package | Rows | Runtime content SHA-256 | Canonical artifact file SHA-256 |
 |---|---:|---|---|
-| Historical training | 1,802 | `6e131681ceac3a1a61daccab07109dd5281d5260d885a6427dde45e6caf571ba` | `2d17752fedccbdf544ac07e57b9530840f3d230f3e5a4886fdd816b5052db990` |
-| Future features | 610 of 658 census rows | `d91996ed97c98fc0613c717a11657610a4a4ac15b2383d8b34f86c3ee72fdf0d` | `580adef9f96aa88b95c7cf742bcbeb289fc9c244a2db9efdd0a836b31036f3b8` |
-| Population census | 658 | `ed93d3519c7b9dbccd6fec35ce53bb6c46f7675c698870fc721b4992f32765b4` | `1f18456cb449a5a55c3016c7c80f14b580e7e25a0819b7f8afe97904b7f91bad` |
+| Historical training | 1,802 | `6e131681ceac3a1a61daccab07109dd5281d5260d885a6427dde45e6caf571ba` | `53ce8aca8e40f14f2f4515b1434b3a2ee49ef2c8cc120272e1acb948d608c17d` |
+| Future features | 610 of 658 census rows | `7c23a1b562a0bc7909cb560e13ce88faf8943c747b71216e92cf228bb7b1cb52` | `50d43925c62676cf4cfbf3060f6f256a5a9c38e19d9afbf907a5540942639671` |
+| Population census | 658 | `ed93d3519c7b9dbccd6fec35ce53bb6c46f7675c698870fc721b4992f32765b4` | `b628138ff2c9c5cbfb3de44c9e40b3e357e5876ea5c0a5520b542f55247cbd4c` |
 
 The future package includes the exact 610 historical-offense rows with admitted 2025 features. The 48 rookie rows have no admitted 2025 history and remain absent from that package; the census preserves them so the runtime can emit typed unavailable/identity-unresolved ledger rows if a separately authorized run ever occurs.
+
+Per the accepted P2 review finding, the future-feature package now carries two `cutoff_records`: the promoted coverage source (feature values) and the bounded census source (row scoping — `population_row_id`, `canonical_player_id`, `position`). Both pin the same governed Data commit `3393a8f0…` and availability instant `2026-07-28T00:47:06.000Z`, so the knowledge cutoff is unchanged; only the package's own provenance completeness changed. The historical-training and census runtime content hashes are byte-identical to the prior materialization (`6e131681…`, `ed93d351…`), which is the mechanical proof that no feature value, census row, or scoring semantic moved.
 
 These are Forecast-produced wrapper packages. Their `owner_repository` is TIBER-Forecast, `owner_commit_sha` is the immutable materializer implementation commit, and `uri_or_path` names the local generated package. Raw TIBER-Data repo/commit/path/hash identity remains in cutoff and source evidence. `source_as_of` is `null`; neither a commit clock nor an upstream package generation clock is relabeled as football domain time.
 
@@ -90,7 +92,7 @@ The Forecast package-admission evidence is bound into the existing six-field For
 - Forecast scoring profile hash
 - exact admitted historical-training and future-feature runtime package hashes
 
-`source_input_sha256s` is the sorted pair `6e131681…`, `d91996ed…`. The raw Data artifact hash `d45f612b…` is deliberately not used as a substitute for either package hash. `passed` is scoped to the authorized target rule: every model target is derived from the eight governed components in exact cents. The 830 promoted `season_ppr` disagreements remain preserved provenance and are not used as target values.
+`source_input_sha256s` is the sorted pair `6e131681…`, `7c23a1b5…`. The raw Data artifact hash `d45f612b…` is deliberately not used as a substitute for either package hash. `passed` is scoped to the authorized target rule: every model target is derived from the eight governed components in exact cents. The 830 promoted `season_ppr` disagreements remain preserved provenance and are not used as target values.
 
 The package-admission evidence separately pins the raw Data scoring manifest and cites `docs/decisions/scoring-profile-hash-equivalence-2026-07-28.md` as the required bridge between the Forecast and Data profile-definition hashes. The raw Data manifest remains provenance; it cannot by itself attest to wrapper-package hashes or Forecast run authority.
 

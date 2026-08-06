@@ -23,11 +23,16 @@ vi.mock('../src/models/seasonal/forwardRidgeModel.js', async (importOriginal) =>
   };
 });
 import {
+  FORWARD_BASE_EVAL_SOURCE_ARTIFACT_PATH,
+  FORWARD_BASE_EVAL_SOURCE_COMMIT,
   FORWARD_BASE_EVAL_SOURCE_SHA256,
 } from '../src/experiments/forwardBaseEval/forwardBaseEvaluation.js';
 import {
   FORWARD_RUN1_CENSUS_PACKAGE_PATH,
+  FORWARD_RUN1_CENSUS_SOURCE_PATH,
+  FORWARD_RUN1_CENSUS_SOURCE_SHA256,
   FORWARD_RUN1_CUTOFF_NORMALIZATION_RULE_SHA256,
+  FORWARD_RUN1_DATA_COMMIT_AVAILABLE_AT,
   FORWARD_RUN1_FORECAST_CUTOFF,
   FORWARD_RUN1_FUTURE_FEATURE_PACKAGE_PATH,
   FORWARD_RUN1_HISTORICAL_TRAINING_PACKAGE_PATH,
@@ -148,7 +153,7 @@ describe('Forward Run 1 exact admission binding', () => {
       '6e131681ceac3a1a61daccab07109dd5281d5260d885a6427dde45e6caf571ba',
     );
     expect(future.value.content_sha256).toBe(
-      'd91996ed97c98fc0613c717a11657610a4a4ac15b2383d8b34f86c3ee72fdf0d',
+      '7c23a1b562a0bc7909cb560e13ce88faf8943c747b71216e92cf228bb7b1cb52',
     );
     expect(census.value.content_sha256).toBe(
       'ed93d3519c7b9dbccd6fec35ce53bb6c46f7675c698870fc721b4992f32765b4',
@@ -177,13 +182,13 @@ describe('Forward Run 1 exact admission binding', () => {
       });
     }
     expect(forwardArtifactSha256(historical.bytes)).toBe(
-      '2d17752fedccbdf544ac07e57b9530840f3d230f3e5a4886fdd816b5052db990',
+      '53ce8aca8e40f14f2f4515b1434b3a2ee49ef2c8cc120272e1acb948d608c17d',
     );
     expect(forwardArtifactSha256(future.bytes)).toBe(
-      '580adef9f96aa88b95c7cf742bcbeb289fc9c244a2db9efdd0a836b31036f3b8',
+      '50d43925c62676cf4cfbf3060f6f256a5a9c38e19d9afbf907a5540942639671',
     );
     expect(forwardArtifactSha256(census.bytes)).toBe(
-      '1f18456cb449a5a55c3016c7c80f14b580e7e25a0819b7f8afe97904b7f91bad',
+      'b628138ff2c9c5cbfb3de44c9e40b3e357e5876ea5c0a5520b542f55247cbd4c',
     );
     expect(historical.value.content.payload.rows).toHaveLength(1802);
     expect(future.value.content.payload.rows).toHaveLength(610);
@@ -287,6 +292,36 @@ describe('Forward Run 1 exact admission binding', () => {
       artifact_file_sha256: packageAdmissionEvidenceSha256,
       uri_or_path: FORWARD_RUN1_PACKAGE_ADMISSION_EVIDENCE_PATH,
     });
+  });
+
+  it('pins a cutoff record for every knowledge-bearing source of the future-feature package', () => {
+    // The future package derives feature values from the coverage artifact
+    // and row scoping (population_row_id, canonical_player_id, position)
+    // from the census artifact. Both must carry package-level cutoff
+    // evidence at the governed Data commit.
+    const knowledgeBearingSources = [
+      { path: FORWARD_BASE_EVAL_SOURCE_ARTIFACT_PATH, sha256: FORWARD_BASE_EVAL_SOURCE_SHA256 },
+      { path: FORWARD_RUN1_CENSUS_SOURCE_PATH, sha256: FORWARD_RUN1_CENSUS_SOURCE_SHA256 },
+    ] as const;
+    const records = future.value.content.cutoff_records;
+    expect(records).toHaveLength(knowledgeBearingSources.length);
+    for (const source of knowledgeBearingSources) {
+      const record = records.find((candidate) =>
+        candidate.evidence_ref.uri_or_path ===
+          `Prometheus-Frameworks/TIBER-Data@${FORWARD_BASE_EVAL_SOURCE_COMMIT}:${source.path}`);
+      expect(record).toBeDefined();
+      expect(record?.evidence_ref.content_sha256).toBe(source.sha256);
+      expect(record?.fact_available_at).toBe(FORWARD_RUN1_DATA_COMMIT_AVAILABLE_AT);
+      expect(Date.parse(record?.fact_available_at ?? '')).toBeLessThanOrEqual(
+        Date.parse(FORWARD_RUN1_FORECAST_CUTOFF),
+      );
+    }
+    // The completed provenance still admits through the unchanged runtime
+    // path to the test-only fit boundary without executing Forward Run 1.
+    expect(() => runForwardCandidateService(makeInput())).toThrow(
+      fitBoundaryProbe.sentinel,
+    );
+    expect(fitBoundaryProbe.fit).toHaveBeenCalledTimes(1);
   });
 
   it('fails closed one millisecond before the controlling Forecast dependency', () => {
