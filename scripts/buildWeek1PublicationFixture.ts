@@ -25,7 +25,7 @@ import {
   canonicalForwardJsonSha256,
 } from '../src/serialization/canonicalForwardArtifacts.js';
 import {
-  TIBER_GENERIC_FULL_PPR_V1_PROFILE_REF,
+  TIBER_GENERIC_FULL_PPR_V1,
   TIBER_GENERIC_FULL_PPR_V1_SHA256,
 } from '../src/contracts/genericFullPprProfile.js';
 import {
@@ -45,8 +45,10 @@ import {
   WEEKLY_SERIALIZER_ID,
   WEEKLY_SERIALIZER_VERSION,
   WEEKLY_SUPPORTED_POSITIONS,
+  WEEKLY_FORECAST_REPOSITORY,
   validateWeeklyPublication,
   weeklyManifestSha256,
+  type WeeklyForecastPublicationManifest,
   type WeeklyPlayerRow,
   type WeeklyVerificationContext,
 } from '../src/contracts/weeklyForecastPublication.js';
@@ -216,7 +218,7 @@ const EXAMPLE_ROWS: readonly WeeklyPlayerRow[] = [
   },
 ];
 
-function buildManifest(rowsSha256: string) {
+function buildManifest(rowsSha256: string): WeeklyForecastPublicationManifest {
   const censusRowCount = EXAMPLE_ROWS.length;
 
   const base = {
@@ -264,8 +266,8 @@ function buildManifest(rowsSha256: string) {
           // Producer claim, named as such. The validator performs its own local
           // comparison against forecast_cutoff and does not trust this field.
           self_reported_status: 'eligible' as const,
-          // Honest default: record-level timestamps cannot be checked without
-          // the source bytes, so admission requires a verification context.
+          // Honest example state: source bytes are absent. A real publication
+          // must change this to locally_verified and supply structured evidence.
           record_level_verification: 'unverified_requires_source_bytes' as const,
           record_count_eligible: censusRowCount,
           record_count_post_cutoff: 0,
@@ -314,8 +316,7 @@ function buildManifest(rowsSha256: string) {
           // Producer claim, named as such. The validator performs its own local
           // comparison against forecast_cutoff and does not trust this field.
           self_reported_status: 'eligible' as const,
-          // Honest default: record-level timestamps cannot be checked without
-          // the source bytes, so admission requires a verification context.
+          // Honest example state: source bytes are absent; non-admissible.
           record_level_verification: 'unverified_requires_source_bytes' as const,
           record_count_eligible: censusRowCount,
           record_count_post_cutoff: 0,
@@ -326,18 +327,29 @@ function buildManifest(rowsSha256: string) {
     ],
 
     scoring_profile: {
-      ...TIBER_GENERIC_FULL_PPR_V1_PROFILE_REF,
+      ...TIBER_GENERIC_FULL_PPR_V1,
       profile_sha256: TIBER_GENERIC_FULL_PPR_V1_SHA256,
       source_reconciliation: {
         status: 'unavailable',
-        evidence_ref: null,
-        note: 'Scoring reconciliation evidence is a pinned input for a real publication.',
+        validator_id: 'example-weekly-scoring-reconciliation',
+        validator_version: '0.0.0-example',
+        evidence_ref: {
+          repository: WEEKLY_FORECAST_REPOSITORY,
+          path: 'example://weekly/scoring-reconciliation.json',
+          artifact_version: 'weekly-scoring-reconciliation-v1-example',
+          content_sha256: PLACEHOLDER_SHA,
+        },
+        scoring_profile_sha256: TIBER_GENERIC_FULL_PPR_V1_SHA256,
+        source_input_sha256s: [PLACEHOLDER_SHA],
       },
     },
 
     model: {
       model_id: 'example-weekly-base',
       model_version: '0.0.0-example',
+      implementation_repository: WEEKLY_FORECAST_REPOSITORY,
+      implementation_commit_sha: '0'.repeat(40),
+      implementation_commit_evidence_sha256: PLACEHOLDER_SHA,
       configuration_sha256: PLACEHOLDER_SHA,
       feature_configuration_sha256: PLACEHOLDER_SHA,
       fitted_model_ref: null,
@@ -395,8 +407,8 @@ function buildManifest(rowsSha256: string) {
     lifecycle: {
       state: 'draft' as const,
       consumer_eligibility: WEEKLY_DEFAULT_CONSUMER_ELIGIBILITY,
-      // Admission is a separate hashed receipt bound to this manifest's digest;
-      // a manifest can never admit itself.
+      // Admission requires both a separate receipt and an independently
+      // configured expected receipt digest; a manifest can never admit itself.
       admission_requires_receipt: true as const,
     },
 
@@ -430,7 +442,7 @@ function buildManifest(rowsSha256: string) {
   // The manifest carries no digest *of itself* — that was self-referential, and
   // it meant an admission edit invalidated the digest that identifies the
   // publication. `weeklyManifestSha256()` hashes the finished manifest, and the
-  // admission receipt binds to that value.
+  // admission receipt binds to that value and must itself be externally pinned.
   return {
     ...base,
     digests: {
@@ -468,7 +480,7 @@ function main() {
   const manifest = buildManifest(rowsSha256);
   const manifestJson = canonicalForwardJson(manifest);
 
-  const validation = validateWeeklyPublication(manifest as never, EXAMPLE_ROWS, exampleCensusContext());
+  const validation = validateWeeklyPublication(manifest, EXAMPLE_ROWS, exampleCensusContext());
   if (!validation.valid) {
     console.error('Fixture failed contract validation:');
     for (const issue of validation.errors) console.error(`  ${issue.code} @ ${issue.path}: ${issue.message}`);
@@ -480,7 +492,7 @@ function main() {
     const onDiskRows = readFileSync(ROWS_PATH, 'utf8');
     const identical = onDiskManifest === `${manifestJson}\n` && onDiskRows === `${rowsJson}\n`;
     console.log(identical ? 'byte-identical: yes' : 'byte-identical: NO');
-    console.log(`manifest_sha256=${weeklyManifestSha256(manifest as never)}`);
+    console.log(`manifest_sha256=${weeklyManifestSha256(manifest)}`);
     console.log(`player_rows_sha256=${rowsSha256}`);
     process.exit(identical ? 0 : 1);
   }
@@ -490,7 +502,7 @@ function main() {
   writeFileSync(ROWS_PATH, `${rowsJson}\n`);
   console.log(`Wrote ${path.relative(REPO_ROOT, MANIFEST_PATH)}`);
   console.log(`Wrote ${path.relative(REPO_ROOT, ROWS_PATH)}`);
-  console.log(`manifest_sha256=${weeklyManifestSha256(manifest as never)}`);
+  console.log(`manifest_sha256=${weeklyManifestSha256(manifest)}`);
   console.log(`player_rows_sha256=${rowsSha256}`);
 }
 

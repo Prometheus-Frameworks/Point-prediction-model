@@ -14,17 +14,20 @@
  * digest that identifies it — and a reviewer could flip
  * `consumer_eligibility` by hand.
  *
- * Admission is therefore a **separate, independently hashed receipt**
- * (`WeeklyAdmissionReceipt`) that binds to an exact `manifest_sha256`. This
- * mirrors the house pattern established by the Forward Run 1 admission binding
- * on `main` (`src/contracts/forwardRun1/forwardRun1AdmissionBinding.ts`), where
- * admission evidence is a hashed artifact separate from what it admits.
+ * Admission is therefore a **separate, content-addressed receipt**
+ * (`WeeklyAdmissionReceipt`) that binds to an exact `manifest_sha256`. The
+ * consumer must independently pin the digest of that whole receipt plus its
+ * authority/decision identity through `WeeklyTrustedAdmissionBinding`; receipt
+ * bytes cannot establish their own authority. This mirrors the house pattern
+ * established by the Forward Run 1 binding on `main`
+ * (`src/experiments/forwardRun1/forwardRun1AdmissionBinding.ts`).
  *
  * Consequences, all enforced:
  *   - a manifest may declare `draft` or `candidate` only, never eligibility;
- *   - a receipt is valid only against the manifest digest it names;
- *   - mutating any manifest field, row, or score breaks that binding and the
- *     consumer refuses.
+ *   - a receipt is valid only against the manifest digest it names and an
+ *     independently configured expected receipt digest;
+ *   - mutating a manifest, row, score, or receipt breaks the unchanged trust
+ *     binding and the consumer refuses.
  *
  * ## Lineage
  *
@@ -36,11 +39,17 @@
  * candidate governed by #167/#170.
  */
 
-import { canonicalForwardJsonSha256 } from '../serialization/canonicalForwardArtifacts.js';
-import type {
-  GenericFullPprProfileV1,
-  ScoringReconciliationEvidenceRef,
+import {
+  canonicalForwardJsonSha256,
+  compareForwardCanonicalStrings,
+} from '../serialization/canonicalForwardArtifacts.js';
+import {
+  TIBER_GENERIC_FULL_PPR_V1,
+  TIBER_GENERIC_FULL_PPR_V1_PROFILE_ID,
+  TIBER_GENERIC_FULL_PPR_V1_PROFILE_VERSION,
   TIBER_GENERIC_FULL_PPR_V1_SHA256,
+  type GenericFullPprProfileV1,
+  type ScoringReconciliationEvidenceRef,
 } from './genericFullPprProfile.js';
 
 // ---------------------------------------------------------------------------
@@ -68,6 +77,11 @@ export const WEEKLY_SERIALIZER_VERSION = '1.0.0' as const;
 export const WEEKLY_SCORING_PROFILE_ID = 'tiber-generic-full-ppr-v1' as const;
 export const WEEKLY_CUTOFF_RULE = 'fact_available_at <= forecast_cutoff' as const;
 export const WEEKLY_RANK_BASIS = 'expected_generic_full_ppr_points_week' as const;
+export const WEEKLY_TARGET_SEASON = 2026 as const;
+export const WEEKLY_TARGET_WEEK = 1 as const;
+export const WEEKLY_FORECAST_REPOSITORY =
+  'Prometheus-Frameworks/TIBER-Forecast' as const;
+export const WEEKLY_INPUT_NORMALIZATION_RULE_ID = 'utc-instant-v1' as const;
 
 export const WEEKLY_SUPPORTED_POSITIONS = ['QB', 'RB', 'WR', 'TE'] as const;
 export type WeeklySupportedPosition = (typeof WEEKLY_SUPPORTED_POSITIONS)[number];
@@ -115,6 +129,7 @@ export interface WeeklyPreseasonInputClassRule {
   availability_rule_id: WeeklyAvailabilityRuleId;
   source_timestamp_locator: string;
   owner_repository: string;
+  normalization_rule_id: typeof WEEKLY_INPUT_NORMALIZATION_RULE_ID;
   required: boolean;
   notes: string;
 }
@@ -135,6 +150,7 @@ export const WEEKLY_CANONICAL_INPUT_CLASS_RULES: readonly WeeklyPreseasonInputCl
       availability_rule_id: 'prior_season_final_and_governed',
       source_timestamp_locator: 'artifact.source_as_of',
       owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      normalization_rule_id: WEEKLY_INPUT_NORMALIZATION_RULE_ID,
       required: true,
       notes: 'Realized prior-season weekly PPR outcomes. Never current season.',
     },
@@ -143,38 +159,43 @@ export const WEEKLY_CANONICAL_INPUT_CLASS_RULES: readonly WeeklyPreseasonInputCl
       availability_rule_id: 'prior_season_final_and_governed',
       source_timestamp_locator: 'artifact.source_as_of',
       owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      normalization_rule_id: WEEKLY_INPUT_NORMALIZATION_RULE_ID,
       required: true,
       notes: 'Prior-season usage/role aggregates.',
     },
     {
       input_class: 'depth_chart_and_role_priors',
       availability_rule_id: 'state_effective_at_or_before_cutoff',
-      source_timestamp_locator: 'artifact.source_as_of',
+      source_timestamp_locator: 'record.effective_at',
       owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      normalization_rule_id: WEEKLY_INPUT_NORMALIZATION_RULE_ID,
       required: false,
       notes: 'Preseason depth-chart state as of the cutoff.',
     },
     {
       input_class: 'roster_and_team_assignment_state',
       availability_rule_id: 'state_effective_at_or_before_cutoff',
-      source_timestamp_locator: 'artifact.source_as_of',
+      source_timestamp_locator: 'record.effective_at',
       owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      normalization_rule_id: WEEKLY_INPUT_NORMALIZATION_RULE_ID,
       required: true,
       notes: 'Team assignment / free-agency state.',
     },
     {
       input_class: 'schedule_and_opponent_context',
       availability_rule_id: 'published_at_or_before_cutoff',
-      source_timestamp_locator: 'artifact.source_as_of',
+      source_timestamp_locator: 'artifact.published_at',
       owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      normalization_rule_id: WEEKLY_INPUT_NORMALIZATION_RULE_ID,
       required: false,
       notes: 'Week 1 opponent context from the published schedule.',
     },
     {
       input_class: 'player_availability_status',
       availability_rule_id: 'state_effective_at_or_before_cutoff',
-      source_timestamp_locator: 'artifact.source_as_of',
+      source_timestamp_locator: 'record.effective_at',
       owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      normalization_rule_id: WEEKLY_INPUT_NORMALIZATION_RULE_ID,
       required: false,
       notes: 'Injury/availability designations known at the cutoff.',
     },
@@ -248,8 +269,10 @@ export interface WeeklyContentRef {
  * so nothing reads it as a verification. The validator performs its own local
  * check against `source_as_of`, and `record_level_verification` states honestly
  * whether record-level timestamps could be checked at all without the source
- * bytes. `unverified_requires_source_bytes` is the honest default and blocks
- * admission unless a verification context supplies the missing evidence.
+ * bytes. `unverified_requires_source_bytes` is the honest example default and
+ * always blocks a real publication. A real document must declare
+ * `locally_verified` and the verification context must independently bind the
+ * exact source bytes and evidence artifact.
  */
 export type WeeklyCutoffStatus =
   | 'eligible'
@@ -444,6 +467,10 @@ export interface WeeklySerializationIdentity {
 export interface WeeklyModelIdentity {
   model_id: string;
   model_version: string;
+  implementation_repository: typeof WEEKLY_FORECAST_REPOSITORY;
+  implementation_commit_sha: string;
+  /** SHA-256 of the exact commit object or an independently archived code bundle. */
+  implementation_commit_evidence_sha256: string;
   configuration_sha256: string;
   feature_configuration_sha256: string;
   fitted_model_ref: WeeklyContentRef | null;
@@ -538,13 +565,29 @@ export interface WeeklyAdmissionReceipt {
   manifest_sha256: string;
   player_rows_sha256: string;
 
+  /** Must match a consumer-configured authority binding, not caller input. */
+  authority_id: string;
+  authority_repository: string;
   decided_by: string;
   decided_at: string;
-  decision_ref: WeeklyEvidenceRef;
+  decision_ref: WeeklyDecisionRef;
   admission_path: WeeklyAdmissionPath;
   in_season_gate_weakened: false;
   consumer_eligibility: 'eligible_admitted';
   limitations: readonly string[];
+}
+
+/** A durable, content-addressed operator decision. Null hashes are forbidden. */
+export interface WeeklyDecisionRef {
+  input_id: null;
+  uri_or_path: string;
+  content_sha256: string;
+  record_id: string;
+}
+
+/** Digest of the whole, non-self-referential admission receipt. */
+export function weeklyAdmissionReceiptSha256(receipt: WeeklyAdmissionReceipt): string {
+  return canonicalForwardJsonSha256(receipt);
 }
 
 // ---------------------------------------------------------------------------
@@ -570,11 +613,17 @@ export type WeeklyValidationErrorCode =
   | 'required_input_class_missing'
   | 'duplicate_input_id'
   | 'duplicate_input_class'
+  | 'input_class_not_canonical'
+  | 'input_rule_mismatch'
   | 'undeclared_input_id_referenced'
   | 'input_post_cutoff'
   | 'input_cutoff_unresolved'
   | 'input_cutoff_unverified'
   | 'input_source_as_of_invalid'
+  | 'input_verification_binding_mismatch'
+  | 'input_verification_artifact_invalid'
+  | 'census_effective_at_invalid'
+  | 'census_post_cutoff'
   | 'population_reconciliation_incomplete'
   | 'status_counts_mismatch'
   | 'identity_coverage_mismatch'
@@ -592,10 +641,18 @@ export type WeeklyValidationErrorCode =
   | 'rank_ordering_violated'
   | 'available_row_missing_required_input'
   | 'fabricated_uncertainty'
+  | 'uncertainty_contract_mismatch'
   | 'actual_outcome_present_before_target_week'
   | 'rank_on_unavailable_row'
   | 'unavailable_row_missing_reason'
   | 'manifest_lifecycle_claims_eligibility'
+  | 'manifest_identity_invalid'
+  | 'scoring_profile_mismatch'
+  | 'scoring_reconciliation_invalid'
+  | 'model_identity_invalid'
+  | 'output_binding_invalid'
+  | 'serializer_identity_invalid'
+  | 'reliability_contract_invalid'
   | 'example_marker_in_real_publication'
   | 'placeholder_hash_in_real_publication'
   | 'placeholder_commit_in_real_publication'
@@ -630,6 +687,226 @@ function issue(
   return { code, path, message };
 }
 
+const malformed = (
+  errors: WeeklyValidationIssue[],
+  path: string,
+  message: string,
+): void => {
+  errors.push(issue('malformed_document', path, message));
+};
+
+function expectRecord(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): Record<string, unknown> | null {
+  if (!isRecord(value)) {
+    malformed(errors, path, 'Expected an object.');
+    return null;
+  }
+  return value;
+}
+
+function expectString(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+  nullable = false,
+): void {
+  if ((nullable && value === null) || (typeof value === 'string' && value.length > 0)) return;
+  malformed(errors, path, nullable ? 'Expected a non-empty string or null.' : 'Expected a non-empty string.');
+}
+
+function expectBoolean(value: unknown, path: string, errors: WeeklyValidationIssue[]): void {
+  if (typeof value !== 'boolean') malformed(errors, path, 'Expected a boolean.');
+}
+
+function expectNumber(value: unknown, path: string, errors: WeeklyValidationIssue[]): void {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    malformed(errors, path, 'Expected a finite number.');
+  }
+}
+
+function expectNullableNumber(value: unknown, path: string, errors: WeeklyValidationIssue[]): void {
+  if (value !== null) expectNumber(value, path, errors);
+}
+
+function expectArray(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+  item: (entry: unknown, entryPath: string, errors: WeeklyValidationIssue[]) => void,
+): void {
+  if (!Array.isArray(value)) {
+    malformed(errors, path, 'Expected an array.');
+    return;
+  }
+  value.forEach((entry, index) => item(entry, `${path}[${index}]`, errors));
+}
+
+const expectStringItem = (value: unknown, path: string, errors: WeeklyValidationIssue[]): void =>
+  expectString(value, path, errors);
+
+function parseEvidenceRefShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const ref = expectRecord(value, path, errors);
+  if (!ref) return;
+  expectString(ref.input_id, `${path}.input_id`, errors, true);
+  expectString(ref.uri_or_path, `${path}.uri_or_path`, errors);
+  expectString(ref.content_sha256, `${path}.content_sha256`, errors, true);
+  expectString(ref.record_id, `${path}.record_id`, errors, true);
+}
+
+function parseContentRefShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const ref = expectRecord(value, path, errors);
+  if (!ref) return;
+  expectString(ref.artifact_type, `${path}.artifact_type`, errors);
+  expectString(ref.artifact_version, `${path}.artifact_version`, errors);
+  expectString(ref.uri_or_path, `${path}.uri_or_path`, errors);
+  expectString(ref.content_sha256, `${path}.content_sha256`, errors);
+}
+
+function parseInputRuleShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const rule = expectRecord(value, path, errors);
+  if (!rule) return;
+  for (const key of [
+    'input_class', 'availability_rule_id', 'source_timestamp_locator',
+    'owner_repository', 'normalization_rule_id', 'notes',
+  ]) expectString(rule[key], `${path}.${key}`, errors);
+  expectBoolean(rule.required, `${path}.required`, errors);
+}
+
+function parseArtifactInputShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const input = expectRecord(value, path, errors);
+  if (!input) return;
+  for (const key of [
+    'input_id', 'input_class', 'owner_repository', 'owner_commit_sha',
+    'artifact_type', 'artifact_version', 'uri_or_path', 'content_sha256',
+    'availability_rule_id',
+  ]) expectString(input[key], `${path}.${key}`, errors);
+  expectString(input.source_as_of, `${path}.source_as_of`, errors, true);
+  expectArray(input.limitations, `${path}.limitations`, errors, expectStringItem);
+  const cutoff = expectRecord(input.cutoff_evidence, `${path}.cutoff_evidence`, errors);
+  if (!cutoff) return;
+  for (const key of [
+    'source_timestamp_locator', 'normalization_rule_id', 'self_reported_status',
+    'record_level_verification',
+  ]) expectString(cutoff[key], `${path}.cutoff_evidence.${key}`, errors);
+  if (
+    typeof cutoff.self_reported_status === 'string' &&
+    !['eligible', 'ineligible_after_cutoff', 'unresolved'].includes(
+      cutoff.self_reported_status,
+    )
+  ) malformed(errors, `${path}.cutoff_evidence.self_reported_status`, 'Unknown cutoff status.');
+  if (
+    typeof cutoff.record_level_verification === 'string' &&
+    !['locally_verified', 'unverified_requires_source_bytes'].includes(
+      cutoff.record_level_verification,
+    )
+  ) malformed(errors, `${path}.cutoff_evidence.record_level_verification`,
+    'Unknown record-level verification status.');
+  for (const key of [
+    'record_count_eligible', 'record_count_post_cutoff', 'record_count_unresolved',
+  ]) expectNumber(cutoff[key], `${path}.cutoff_evidence.${key}`, errors);
+}
+
+function parseScoringProfileShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const profile = expectRecord(value, path, errors);
+  if (!profile) return;
+  for (const key of ['profile_id', 'profile_version', 'profile_sha256']) {
+    expectString(profile[key], `${path}.${key}`, errors);
+  }
+  expectBoolean(profile.league_specific, `${path}.league_specific`, errors);
+  expectBoolean(profile.regular_season_only, `${path}.regular_season_only`, errors);
+  const weights = expectRecord(profile.weights, `${path}.weights`, errors);
+  if (weights) {
+    for (const key of [
+      'reception', 'receiving_yard', 'receiving_touchdown', 'rushing_yard',
+      'rushing_touchdown', 'passing_yard', 'passing_touchdown', 'interception',
+    ]) expectNumber(weights[key], `${path}.weights.${key}`, errors);
+  }
+  expectArray(profile.bonuses, `${path}.bonuses`, errors, () => undefined);
+  expectArray(profile.supported_positions, `${path}.supported_positions`, errors, expectStringItem);
+  expectArray(profile.unsupported_domains, `${path}.unsupported_domains`, errors, expectStringItem);
+  const reconciliation = expectRecord(
+    profile.source_reconciliation,
+    `${path}.source_reconciliation`,
+    errors,
+  );
+  if (!reconciliation) return;
+  for (const key of ['status', 'validator_id', 'validator_version', 'scoring_profile_sha256']) {
+    expectString(reconciliation[key], `${path}.source_reconciliation.${key}`, errors);
+  }
+  const evidenceRefPath = `${path}.source_reconciliation.evidence_ref`;
+  const evidenceRef = expectRecord(reconciliation.evidence_ref, evidenceRefPath, errors);
+  if (evidenceRef) {
+    for (const key of ['repository', 'path', 'artifact_version', 'content_sha256']) {
+      expectString(evidenceRef[key], `${evidenceRefPath}.${key}`, errors);
+    }
+  }
+  expectArray(
+    reconciliation.source_input_sha256s,
+    `${path}.source_reconciliation.source_input_sha256s`,
+    errors,
+    expectStringItem,
+  );
+}
+
+function parseIdentityShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const identity = expectRecord(value, path, errors);
+  if (!identity) return;
+  expectString(identity.canonical_player_id, `${path}.canonical_player_id`, errors, true);
+  expectString(identity.identity_status, `${path}.identity_status`, errors);
+  if (
+    typeof identity.identity_status === 'string' &&
+    !['resolved', 'unresolved', 'conflicting'].includes(identity.identity_status)
+  ) malformed(errors, `${path}.identity_status`, 'Unknown identity status.');
+  parseEvidenceRefShape(identity.source_identity_ref, `${path}.source_identity_ref`, errors);
+  expectString(identity.display_name, `${path}.display_name`, errors);
+  expectString(identity.position, `${path}.position`, errors, true);
+  expectString(identity.nfl_team_abbr, `${path}.nfl_team_abbr`, errors, true);
+  expectBoolean(identity.fuzzy_join_used, `${path}.fuzzy_join_used`, errors);
+  expectBoolean(identity.synthetic_namespace_used, `${path}.synthetic_namespace_used`, errors);
+}
+
+function parseUncertaintyShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const uncertainty = expectRecord(value, path, errors);
+  if (!uncertainty) return;
+  expectString(uncertainty.status, `${path}.status`, errors);
+  expectString(uncertainty.method_id, `${path}.method_id`, errors, true);
+  expectString(uncertainty.method_version, `${path}.method_version`, errors, true);
+  for (const key of [
+    'lower_quantile', 'median', 'upper_quantile', 'interval_lower', 'interval_upper',
+  ]) expectNullableNumber(uncertainty[key], `${path}.${key}`, errors);
+}
+
 /**
  * Structural parse of untrusted input.
  *
@@ -641,79 +918,184 @@ export function parseWeeklyPublicationManifest(
   input: unknown,
 ): WeeklyParseResult<WeeklyForecastPublicationManifest> {
   const errors: WeeklyValidationIssue[] = [];
-
-  if (!isRecord(input)) {
-    return { ok: false, errors: [issue('malformed_document', '', 'Document is not an object.')] };
-  }
-  if (input.artifact_type !== WEEKLY_PUBLICATION_ARTIFACT_TYPE) {
-    errors.push(issue('wrong_artifact_type', 'artifact_type', 'Unexpected artifact_type.'));
-  }
-  if (
-    input.artifact_version !== WEEKLY_PUBLICATION_ARTIFACT_VERSION &&
-    input.artifact_version !== WEEKLY_PUBLICATION_SCHEMA_EXAMPLE_VERSION
-  ) {
-    errors.push(issue('wrong_artifact_version', 'artifact_version', 'Unexpected artifact_version.'));
-  }
-
-  const requiredObjects = [
-    'target', 'scoring_profile', 'model', 'population_census',
-    'population_reconciliation', 'identity_coverage', 'status_counts',
-    'lifecycle', 'reliability_tracking', 'seasonal_candidate_boundary', 'digests',
-  ];
-  for (const key of requiredObjects) {
-    if (!isRecord(input[key])) {
-      errors.push(issue('malformed_document', key, `Missing or non-object "${key}".`));
+  try {
+    const document = expectRecord(input, '', errors);
+    if (!document) return { ok: false, errors };
+    if (document.artifact_type !== WEEKLY_PUBLICATION_ARTIFACT_TYPE) {
+      errors.push(issue('wrong_artifact_type', 'artifact_type', 'Unexpected artifact_type.'));
     }
-  }
-  const requiredArrays = [
-    'preseason_input_class_rules', 'prohibited_input_classes',
-    'artifact_inputs', 'outputs', 'limitations',
-  ];
-  for (const key of requiredArrays) {
-    if (!Array.isArray(input[key])) {
-      errors.push(issue('malformed_document', key, `Missing or non-array "${key}".`));
+    if (
+      document.artifact_version !== WEEKLY_PUBLICATION_ARTIFACT_VERSION &&
+      document.artifact_version !== WEEKLY_PUBLICATION_SCHEMA_EXAMPLE_VERSION
+    ) {
+      errors.push(issue('wrong_artifact_version', 'artifact_version', 'Unexpected artifact_version.'));
     }
-  }
-  for (const key of ['publication_id', 'forecast_cutoff', 'generated_at']) {
-    if (typeof input[key] !== 'string' || input[key] === '') {
-      errors.push(issue('malformed_document', key, `Missing or non-string "${key}".`));
-    }
-  }
+    for (const key of [
+      'artifact_type', 'artifact_version', 'document_kind', 'publication_id',
+      'output_kind', 'forecast_cutoff', 'generated_at', 'cutoff_rule',
+      'uncertainty_status',
+    ]) expectString(document[key], key, errors);
 
+    const target = expectRecord(document.target, 'target', errors);
+    if (target) {
+      expectNumber(target.target_season, 'target.target_season', errors);
+      expectNumber(target.target_week, 'target.target_week', errors);
+      for (const key of [
+        'target_kind', 'rank_basis', 'rank_ordering_rule', 'scoring_profile_id',
+      ]) expectString(target[key], `target.${key}`, errors);
+      expectBoolean(target.is_seasonal_total, 'target.is_seasonal_total', errors);
+      expectBoolean(target.league_specific, 'target.league_specific', errors);
+      expectArray(target.supported_positions, 'target.supported_positions', errors, expectStringItem);
+      expectArray(target.unsupported_domain, 'target.unsupported_domain', errors, expectStringItem);
+    }
+
+    expectArray(
+      document.preseason_input_class_rules,
+      'preseason_input_class_rules',
+      errors,
+      parseInputRuleShape,
+    );
+    expectArray(
+      document.prohibited_input_classes,
+      'prohibited_input_classes',
+      errors,
+      expectStringItem,
+    );
+    expectArray(document.artifact_inputs, 'artifact_inputs', errors, parseArtifactInputShape);
+    parseScoringProfileShape(document.scoring_profile, 'scoring_profile', errors);
+
+    const model = expectRecord(document.model, 'model', errors);
+    if (model) {
+      for (const key of [
+        'model_id', 'model_version', 'implementation_repository',
+        'implementation_commit_sha', 'implementation_commit_evidence_sha256',
+        'configuration_sha256', 'feature_configuration_sha256',
+      ]) expectString(model[key], `model.${key}`, errors);
+      if (model.fitted_model_ref !== null) {
+        parseContentRefShape(model.fitted_model_ref, 'model.fitted_model_ref', errors);
+      }
+    }
+
+    const census = expectRecord(document.population_census, 'population_census', errors);
+    if (census) {
+      parseContentRefShape(census.census_artifact_ref, 'population_census.census_artifact_ref', errors);
+      for (const key of [
+        'census_sha256', 'semantics_owner', 'semantics_ref', 'scope_definition', 'effective_at',
+      ]) expectString(census[key], `population_census.${key}`, errors);
+      expectNumber(census.row_count, 'population_census.row_count', errors);
+    }
+
+    const reconciliation = expectRecord(
+      document.population_reconciliation,
+      'population_reconciliation',
+      errors,
+    );
+    if (reconciliation) {
+      expectNumber(reconciliation.output_row_count, 'population_reconciliation.output_row_count', errors);
+      for (const key of [
+        'duplicate_population_row_ids', 'missing_population_row_ids', 'extra_population_row_ids',
+      ]) expectArray(reconciliation[key], `population_reconciliation.${key}`, errors, expectStringItem);
+      expectBoolean(reconciliation.one_to_one_complete, 'population_reconciliation.one_to_one_complete', errors);
+    }
+
+    const coverage = expectRecord(document.identity_coverage, 'identity_coverage', errors);
+    if (coverage) {
+      for (const key of [
+        'census_row_count', 'resolved_count', 'unresolved_count', 'conflicting_count', 'coverage_rate',
+      ]) expectNumber(coverage[key], `identity_coverage.${key}`, errors);
+      for (const key of ['unresolved_population_row_ids', 'conflicting_population_row_ids']) {
+        expectArray(coverage[key], `identity_coverage.${key}`, errors, expectStringItem);
+      }
+    }
+
+    const counts = expectRecord(document.status_counts, 'status_counts', errors);
+    if (counts) {
+      for (const status of WEEKLY_FORECAST_STATUSES) {
+        expectNumber(counts[status], `status_counts.${status}`, errors);
+      }
+    }
+
+    const lifecycle = expectRecord(document.lifecycle, 'lifecycle', errors);
+    if (lifecycle) {
+      expectString(lifecycle.state, 'lifecycle.state', errors);
+      expectString(lifecycle.consumer_eligibility, 'lifecycle.consumer_eligibility', errors);
+      expectBoolean(lifecycle.admission_requires_receipt, 'lifecycle.admission_requires_receipt', errors);
+    }
+
+    const reliability = expectRecord(document.reliability_tracking, 'reliability_tracking', errors);
+    if (reliability) {
+      for (const key of ['truth_label_owner', 'truth_label_artifact_kind', 'forge_role']) {
+        expectString(reliability[key], `reliability_tracking.${key}`, errors);
+      }
+      if (reliability.truth_label_ref !== null) {
+        parseEvidenceRefShape(reliability.truth_label_ref, 'reliability_tracking.truth_label_ref', errors);
+      }
+      expectBoolean(reliability.forge_is_truth_label, 'reliability_tracking.forge_is_truth_label', errors);
+      expectString(reliability.scored_at, 'reliability_tracking.scored_at', errors, true);
+    }
+
+    const boundary = expectRecord(document.seasonal_candidate_boundary, 'seasonal_candidate_boundary', errors);
+    if (boundary) {
+      for (const key of ['seasonal_candidate_run_id', 'relationship', 'note']) {
+        expectString(boundary[key], `seasonal_candidate_boundary.${key}`, errors);
+      }
+      for (const key of [
+        'may_relabel_seasonal_candidate', 'may_promote_seasonal_candidate',
+        'may_consume_seasonal_candidate',
+      ]) expectBoolean(boundary[key], `seasonal_candidate_boundary.${key}`, errors);
+    }
+
+    expectArray(document.outputs, 'outputs', errors, parseContentRefShape);
+    const digests = expectRecord(document.digests, 'digests', errors);
+    if (digests) {
+      expectString(digests.player_rows_sha256, 'digests.player_rows_sha256', errors);
+      const serialization = expectRecord(digests.serialization, 'digests.serialization', errors);
+      if (serialization) {
+        expectString(serialization.serializer_id, 'digests.serialization.serializer_id', errors);
+        expectString(serialization.serializer_version, 'digests.serialization.serializer_version', errors);
+      }
+    }
+    expectArray(document.limitations, 'limitations', errors, expectStringItem);
+    // Establish canonical-serialization safety as part of parsing. This also
+    // rejects cycles, accessors, exotic prototypes, undefined values, and
+    // non-finite values hidden in otherwise-unused fields before admission.
+    canonicalForwardJsonSha256(document);
+  } catch (error) {
+    malformed(errors, '', `Document could not be inspected safely: ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
   if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value: input as unknown as WeeklyForecastPublicationManifest };
+  return { ok: true, value: input as WeeklyForecastPublicationManifest };
 }
 
 /** Structural parse of an untrusted rows document. Never throws. */
 export function parseWeeklyPlayerRows(
   input: unknown,
 ): WeeklyParseResult<readonly WeeklyPlayerRow[]> {
-  if (!Array.isArray(input)) {
-    return { ok: false, errors: [issue('malformed_document', '', 'Rows document is not an array.')] };
-  }
   const errors: WeeklyValidationIssue[] = [];
-  input.forEach((row, index) => {
-    if (!isRecord(row)) {
-      errors.push(issue('malformed_document', `[${index}]`, 'Row is not an object.'));
-      return;
-    }
-    if (typeof row.population_row_id !== 'string' || row.population_row_id === '') {
-      errors.push(issue('malformed_document', `[${index}].population_row_id`, 'Missing population_row_id.'));
-    }
-    if (typeof row.forecast_status !== 'string' ||
-        !(WEEKLY_FORECAST_STATUSES as readonly string[]).includes(row.forecast_status)) {
-      errors.push(issue('malformed_document', `[${index}].forecast_status`, 'Unknown forecast_status.'));
-    }
-    if (!isRecord(row.identity)) {
-      errors.push(issue('malformed_document', `[${index}].identity`, 'Missing identity.'));
-    }
-    if (!isRecord(row.uncertainty)) {
-      errors.push(issue('malformed_document', `[${index}].uncertainty`, 'Missing uncertainty.'));
-    }
-    if (!Array.isArray(row.input_ids_used)) {
-      errors.push(issue('malformed_document', `[${index}].input_ids_used`, 'Missing input_ids_used.'));
-    }
-  });
+  try {
+    expectArray(input, '', errors, (value, path, rowErrors) => {
+      const row = expectRecord(value, path, rowErrors);
+      if (!row) return;
+      expectString(row.population_row_id, `${path}.population_row_id`, rowErrors);
+      expectString(row.forecast_status, `${path}.forecast_status`, rowErrors);
+      if (
+        typeof row.forecast_status === 'string' &&
+        !(WEEKLY_FORECAST_STATUSES as readonly string[]).includes(row.forecast_status)
+      ) malformed(rowErrors, `${path}.forecast_status`, 'Unknown forecast_status.');
+      parseIdentityShape(row.identity, `${path}.identity`, rowErrors);
+      parseUncertaintyShape(row.uncertainty, `${path}.uncertainty`, rowErrors);
+      expectArray(row.input_ids_used, `${path}.input_ids_used`, rowErrors, expectStringItem);
+      if (row.point_forecast !== null) expectNumber(row.point_forecast, `${path}.point_forecast`, rowErrors);
+      if (row.rank !== null) expectNumber(row.rank, `${path}.rank`, rowErrors);
+      if (row.actual_outcome !== null) malformed(rowErrors, `${path}.actual_outcome`, 'Expected null before the target week.');
+      if (row.forecast_status !== 'forecast_available') {
+        expectArray(row.status_reasons, `${path}.status_reasons`, rowErrors, expectStringItem);
+      }
+    });
+    canonicalForwardJsonSha256(input);
+  } catch (error) {
+    malformed(errors, '', `Rows could not be inspected safely: ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, value: input as readonly WeeklyPlayerRow[] };
 }
@@ -722,26 +1104,37 @@ export function parseWeeklyPlayerRows(
 export function parseWeeklyAdmissionReceipt(
   input: unknown,
 ): WeeklyParseResult<WeeklyAdmissionReceipt> {
-  if (!isRecord(input)) {
-    return { ok: false, errors: [issue('malformed_document', '', 'Receipt is not an object.')] };
-  }
   const errors: WeeklyValidationIssue[] = [];
-  if (input.artifact_type !== WEEKLY_ADMISSION_RECEIPT_ARTIFACT_TYPE) {
-    errors.push(issue('wrong_artifact_type', 'artifact_type', 'Unexpected receipt artifact_type.'));
-  }
-  if (input.artifact_version !== WEEKLY_ADMISSION_RECEIPT_ARTIFACT_VERSION) {
-    errors.push(issue('wrong_artifact_version', 'artifact_version', 'Unexpected receipt artifact_version.'));
-  }
-  for (const key of ['publication_id', 'manifest_sha256', 'player_rows_sha256', 'decided_by', 'decided_at']) {
-    if (typeof input[key] !== 'string' || input[key] === '') {
-      errors.push(issue('malformed_document', key, `Missing or non-string "${key}".`));
+  try {
+    const receipt = expectRecord(input, '', errors);
+    if (!receipt) return { ok: false, errors };
+    if (receipt.artifact_type !== WEEKLY_ADMISSION_RECEIPT_ARTIFACT_TYPE) {
+      errors.push(issue('wrong_artifact_type', 'artifact_type', 'Unexpected receipt artifact_type.'));
     }
-  }
-  if (!isRecord(input.decision_ref)) {
-    errors.push(issue('malformed_document', 'decision_ref', 'Missing decision_ref.'));
+    if (receipt.artifact_version !== WEEKLY_ADMISSION_RECEIPT_ARTIFACT_VERSION) {
+      errors.push(issue('wrong_artifact_version', 'artifact_version', 'Unexpected receipt artifact_version.'));
+    }
+    for (const key of [
+      'artifact_type', 'artifact_version', 'document_kind', 'publication_id',
+      'manifest_sha256', 'player_rows_sha256', 'authority_id',
+      'authority_repository', 'decided_by', 'decided_at', 'admission_path',
+      'consumer_eligibility',
+    ]) expectString(receipt[key], key, errors);
+    expectBoolean(receipt.in_season_gate_weakened, 'in_season_gate_weakened', errors);
+    const decisionRef = expectRecord(receipt.decision_ref, 'decision_ref', errors);
+    if (decisionRef) {
+      if (decisionRef.input_id !== null) malformed(errors, 'decision_ref.input_id', 'Expected null.');
+      expectString(decisionRef.uri_or_path, 'decision_ref.uri_or_path', errors);
+      expectString(decisionRef.content_sha256, 'decision_ref.content_sha256', errors);
+      expectString(decisionRef.record_id, 'decision_ref.record_id', errors);
+    }
+    expectArray(receipt.limitations, 'limitations', errors, expectStringItem);
+    canonicalForwardJsonSha256(receipt);
+  } catch (error) {
+    malformed(errors, '', `Receipt could not be inspected safely: ${error instanceof Error ? error.message : 'unknown error'}`);
   }
   if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value: input as unknown as WeeklyAdmissionReceipt };
+  return { ok: true, value: input as WeeklyAdmissionReceipt };
 }
 
 // ---------------------------------------------------------------------------
@@ -761,8 +1154,40 @@ export interface WeeklyVerificationContext {
     census_sha256: string;
     population_row_ids: readonly string[];
   };
-  /** Input ids whose record-level timestamps were verified against source bytes. */
-  record_level_verified_input_ids?: readonly string[];
+  /**
+   * Verification results produced from the exact source bytes. An input id by
+   * itself is not evidence: every load-bearing identity, digest, timestamp and
+   * count is rebound here and compared fail-closed.
+   */
+  record_level_input_evidence?: readonly WeeklyRecordLevelInputEvidence[];
+  /**
+   * Consumer-owned trust anchor. It must come from deployed configuration or a
+   * separately governed binding artifact, never from the receipt being tested.
+   */
+  admission_authority?: WeeklyTrustedAdmissionBinding;
+}
+
+export interface WeeklyRecordLevelInputEvidence {
+  input_id: string;
+  input_content_sha256: string;
+  owner_repository: string;
+  owner_commit_sha: string;
+  verified_forecast_cutoff: string;
+  verified_source_as_of: string;
+  max_record_effective_at: string;
+  record_count_eligible: number;
+  record_count_post_cutoff: number;
+  record_count_unresolved: number;
+  verification_artifact_ref: WeeklyContentRef;
+}
+
+export interface WeeklyTrustedAdmissionBinding {
+  receipt_sha256: string;
+  authority_id: string;
+  authority_repository: string;
+  decision_ref_uri_or_path: string;
+  decision_ref_content_sha256: string;
+  decision_ref_record_id: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -771,7 +1196,7 @@ export interface WeeklyVerificationContext {
 
 export interface WeeklyValidationResult {
   validator_id: 'tiber-weekly-forecast-publication-validator';
-  validator_version: '2.0.0';
+  validator_version: '3.0.0';
   valid: boolean;
   promotion_authority: false;
   /** True when the document is a schema example rather than a real publication. */
@@ -808,6 +1233,17 @@ export function validateWeeklyPublication(
 
   const isExample = manifest.artifact_version === WEEKLY_PUBLICATION_SCHEMA_EXAMPLE_VERSION;
 
+  // --- document identity --------------------------------------------------
+  if (
+    manifest.artifact_type !== WEEKLY_PUBLICATION_ARTIFACT_TYPE ||
+    (manifest.artifact_version !== WEEKLY_PUBLICATION_ARTIFACT_VERSION && !isExample) ||
+    manifest.document_kind !== 'weekly_publication_manifest' ||
+    manifest.output_kind !== WEEKLY_OUTPUT_KIND ||
+    manifest.cutoff_rule !== WEEKLY_CUTOFF_RULE
+  ) {
+    fail('manifest_identity_invalid', '', 'Manifest identity, output kind, or cutoff rule is not canonical.');
+  }
+
   // --- target -------------------------------------------------------------
   const target = manifest.target;
   if (target?.target_kind !== 'single_scoring_week') {
@@ -816,14 +1252,28 @@ export function validateWeeklyPublication(
   if (target?.is_seasonal_total !== false) {
     fail('target_is_seasonal_total', 'target.is_seasonal_total', 'A seasonal total may not be published as weekly output.');
   }
-  if (!Number.isInteger(target?.target_season) || !Number.isInteger(target?.target_week) || target.target_week < 1) {
-    fail('target_field_invalid', 'target', 'target_season and target_week must be positive integers.');
+  if (
+    target?.target_season !== WEEKLY_TARGET_SEASON ||
+    target?.target_week !== WEEKLY_TARGET_WEEK
+  ) {
+    fail('target_field_invalid', 'target',
+      `This contract is scoped to ${WEEKLY_TARGET_SEASON} Week ${WEEKLY_TARGET_WEEK}.`);
   }
   if (target?.rank_basis !== WEEKLY_RANK_BASIS) {
     fail('target_field_invalid', 'target.rank_basis', 'Unexpected rank_basis.');
   }
   if (target?.rank_ordering_rule !== WEEKLY_RANK_ORDERING_RULE) {
     fail('target_field_invalid', 'target.rank_ordering_rule', 'Unexpected rank_ordering_rule.');
+  }
+  if (
+    target?.scoring_profile_id !== WEEKLY_SCORING_PROFILE_ID ||
+    target?.league_specific !== false ||
+    canonicalForwardJsonSha256(target?.supported_positions) !==
+      canonicalForwardJsonSha256(WEEKLY_SUPPORTED_POSITIONS) ||
+    canonicalForwardJsonSha256(target?.unsupported_domain) !==
+      canonicalForwardJsonSha256(['IDP'])
+  ) {
+    fail('target_field_invalid', 'target', 'Scoring profile, position domain, or league scope is not canonical.');
   }
 
   // --- timestamps ---------------------------------------------------------
@@ -864,6 +1314,69 @@ export function validateWeeklyPublication(
       'Declared seasonal-candidate boundary differs from the canonical policy.');
   }
 
+  // --- scoring/model contracts -------------------------------------------
+  const {
+    profile_sha256: declaredProfileSha,
+    source_reconciliation: sourceReconciliation,
+    ...declaredProfileDefinition
+  } = manifest.scoring_profile;
+  if (
+    canonicalForwardJsonSha256(declaredProfileDefinition) !==
+      canonicalForwardJsonSha256(TIBER_GENERIC_FULL_PPR_V1) ||
+    declaredProfileSha !== TIBER_GENERIC_FULL_PPR_V1_SHA256 ||
+    manifest.scoring_profile.profile_id !== TIBER_GENERIC_FULL_PPR_V1_PROFILE_ID ||
+    manifest.scoring_profile.profile_version !== TIBER_GENERIC_FULL_PPR_V1_PROFILE_VERSION
+  ) {
+    fail('scoring_profile_mismatch', 'scoring_profile',
+      'Scoring profile must exactly match the canonical generic full-PPR definition and digest.');
+  }
+
+  const inputHashes = (manifest.artifact_inputs ?? [])
+    .map((input) => input.content_sha256)
+    .sort(compareForwardCanonicalStrings);
+  const canonicalInputHashes = [...new Set(inputHashes)];
+  const reconciliationHashes = [...(sourceReconciliation?.source_input_sha256s ?? [])]
+    .sort(compareForwardCanonicalStrings);
+  const canonicalReconciliationHashes = [...new Set(reconciliationHashes)];
+  const reconciliationEvidence = sourceReconciliation?.evidence_ref;
+  if (
+    (!isExample && sourceReconciliation?.status !== 'passed') ||
+    (isExample && !['passed', 'unavailable'].includes(sourceReconciliation?.status)) ||
+    sourceReconciliation?.scoring_profile_sha256 !== TIBER_GENERIC_FULL_PPR_V1_SHA256 ||
+    canonicalForwardJsonSha256(sourceReconciliation?.source_input_sha256s ?? []) !==
+      canonicalForwardJsonSha256(canonicalReconciliationHashes) ||
+    canonicalForwardJsonSha256(canonicalReconciliationHashes) !==
+      canonicalForwardJsonSha256(canonicalInputHashes) ||
+    !sourceReconciliation?.validator_id ||
+    !sourceReconciliation?.validator_version ||
+    !reconciliationEvidence?.repository ||
+    !reconciliationEvidence?.path ||
+    !reconciliationEvidence?.artifact_version ||
+    !WEEKLY_SHA256_PATTERN.test(reconciliationEvidence?.content_sha256 ?? '')
+  ) {
+    fail('scoring_reconciliation_invalid', 'scoring_profile.source_reconciliation',
+      'Scoring reconciliation must bind the canonical profile and every exact admitted input hash.');
+  }
+
+  const model = manifest.model;
+  if (
+    !model?.model_id ||
+    !model?.model_version ||
+    model?.implementation_repository !== WEEKLY_FORECAST_REPOSITORY ||
+    !WEEKLY_COMMIT_SHA_PATTERN.test(model?.implementation_commit_sha ?? '') ||
+    !WEEKLY_SHA256_PATTERN.test(model?.implementation_commit_evidence_sha256 ?? '') ||
+    !WEEKLY_SHA256_PATTERN.test(model?.configuration_sha256 ?? '') ||
+    !WEEKLY_SHA256_PATTERN.test(model?.feature_configuration_sha256 ?? '') ||
+    (!isExample && model?.fitted_model_ref === null)
+  ) {
+    fail('model_identity_invalid', 'model',
+      'Model identity must bind Forecast implementation code, configuration, features, and a real fitted model artifact.');
+  }
+  if (model?.fitted_model_ref && !WEEKLY_SHA256_PATTERN.test(model.fitted_model_ref.content_sha256)) {
+    fail('model_identity_invalid', 'model.fitted_model_ref.content_sha256',
+      'Fitted model reference must carry a lowercase SHA-256.');
+  }
+
   // --- inputs -------------------------------------------------------------
   const inputs = manifest.artifact_inputs ?? [];
   const seenInputIds = new Set<string>();
@@ -871,7 +1384,13 @@ export function validateWeeklyPublication(
   const cutoffMs = isCanonicalUtc(manifest.forecast_cutoff)
     ? new Date(manifest.forecast_cutoff).getTime()
     : null;
-  const verifiedIds = new Set(context.record_level_verified_input_ids ?? []);
+  const verificationByInputId = new Map(
+    (context.record_level_input_evidence ?? []).map((evidence) => [evidence.input_id, evidence]),
+  );
+  if (verificationByInputId.size !== (context.record_level_input_evidence ?? []).length) {
+    fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
+      'Record-level verification evidence contains duplicate input ids.');
+  }
 
   inputs.forEach((input, index) => {
     const at = `artifact_inputs[${index}]`;
@@ -889,6 +1408,22 @@ export function validateWeeklyPublication(
       fail('prohibited_input_class_admitted', at, `Input class ${input.input_class} is prohibited before kickoff.`);
     }
 
+    const canonicalRule = WEEKLY_CANONICAL_INPUT_CLASS_RULES.find(
+      (rule) => rule.input_class === input.input_class,
+    );
+    if (!canonicalRule) {
+      fail('input_class_not_canonical', `${at}.input_class`,
+        `Input class "${input.input_class}" is not part of the canonical preseason policy.`);
+    } else if (
+      input.owner_repository !== canonicalRule.owner_repository ||
+      input.availability_rule_id !== canonicalRule.availability_rule_id ||
+      input.cutoff_evidence?.source_timestamp_locator !== canonicalRule.source_timestamp_locator ||
+      input.cutoff_evidence?.normalization_rule_id !== canonicalRule.normalization_rule_id
+    ) {
+      fail('input_rule_mismatch', at,
+        `Input "${input.input_id}" does not exactly implement its canonical owner/availability/locator/normalization rule.`);
+    }
+
     // Local cutoff check — the producer's own status is not sufficient.
     if (!isCanonicalUtc(input.source_as_of)) {
       fail('input_source_as_of_invalid', `${at}.source_as_of`, 'source_as_of must be a canonical UTC instant.');
@@ -898,24 +1433,96 @@ export function validateWeeklyPublication(
     }
 
     const evidence = input.cutoff_evidence;
+    if ([
+      evidence?.record_count_eligible,
+      evidence?.record_count_post_cutoff,
+      evidence?.record_count_unresolved,
+    ].some((count) => !Number.isInteger(count) || (count as number) < 0)) {
+      fail('input_cutoff_unresolved', `${at}.cutoff_evidence`,
+        'Record counts must be non-negative integers.');
+    }
+    if (canonicalRule?.required && (evidence?.record_count_eligible ?? 0) < 1) {
+      fail('input_cutoff_unresolved', `${at}.cutoff_evidence.record_count_eligible`,
+        'A required input must have at least one record verified eligible at the cutoff.');
+    }
     if (evidence?.record_count_post_cutoff > 0) {
       fail('input_post_cutoff', `${at}.cutoff_evidence`, 'Input admits records after the declared cutoff.');
     }
     if (evidence?.record_count_unresolved > 0 || evidence?.self_reported_status === 'unresolved') {
       fail('input_cutoff_unresolved', `${at}.cutoff_evidence`, 'Input has unresolved availability evidence.');
     }
+    if (!['eligible', 'ineligible_after_cutoff', 'unresolved'].includes(
+      evidence?.self_reported_status,
+    )) {
+      fail('input_cutoff_unresolved', `${at}.cutoff_evidence.self_reported_status`,
+        'Unknown producer cutoff status.');
+    }
     if (evidence?.self_reported_status === 'ineligible_after_cutoff') {
       fail('input_post_cutoff', `${at}.cutoff_evidence`, 'Producer reports the input ineligible after cutoff.');
     }
-    // Record-level verification is only real when a context vouches for it.
-    if (
-      evidence?.record_level_verification === 'locally_verified' &&
-      !verifiedIds.has(input.input_id)
-    ) {
+    // Unverified is never admission-capable. A `locally_verified` declaration
+    // is accepted only when structured evidence rebinds every load-bearing
+    // field and proves the exact source bytes stayed within the cutoff.
+    const verification = verificationByInputId.get(input.input_id);
+    if (isExample && evidence?.record_level_verification === 'unverified_requires_source_bytes') {
+      // Schema examples are structurally reviewable but categorically
+      // non-admissible by artifact version. Do not fabricate source-byte
+      // verification merely to make an example validator-clean.
+    } else if (evidence?.record_level_verification !== 'locally_verified' || !verification) {
       fail('input_cutoff_unverified', `${at}.cutoff_evidence.record_level_verification`,
-        'Record-level verification is claimed but no verification context vouches for this input.');
+        'Admission requires structured record-level evidence for the exact source bytes.');
+    } else {
+      const verificationArtifact = verification.verification_artifact_ref;
+      const countsMatch =
+        verification.record_count_eligible === evidence.record_count_eligible &&
+        verification.record_count_post_cutoff === evidence.record_count_post_cutoff &&
+        verification.record_count_unresolved === evidence.record_count_unresolved;
+      const identityMatches =
+        verification.input_content_sha256 === input.content_sha256 &&
+        verification.owner_repository === input.owner_repository &&
+        verification.owner_commit_sha === input.owner_commit_sha &&
+        verification.verified_forecast_cutoff === manifest.forecast_cutoff &&
+        verification.verified_source_as_of === input.source_as_of;
+      if (!countsMatch || !identityMatches) {
+        fail('input_verification_binding_mismatch', `${at}.cutoff_evidence`,
+          'Record-level evidence does not bind the exact input bytes, owner commit, cutoff, source timestamp, and counts.');
+      }
+      if (
+        !isCanonicalUtc(verification.max_record_effective_at) ||
+        !isCanonicalUtc(verification.verified_forecast_cutoff) ||
+        !isCanonicalUtc(verification.verified_source_as_of) ||
+        (cutoffMs !== null &&
+          new Date(verification.max_record_effective_at).getTime() > cutoffMs) ||
+        (isCanonicalUtc(verification.verified_source_as_of) &&
+          new Date(verification.max_record_effective_at).getTime() >
+            new Date(verification.verified_source_as_of).getTime())
+      ) {
+        fail('input_verification_binding_mismatch', `${at}.cutoff_evidence`,
+          'Record-level evidence timestamps are invalid or include a record after the forecast cutoff.');
+      }
+      if (
+        !verificationArtifact?.artifact_type ||
+        !verificationArtifact?.artifact_version ||
+        !verificationArtifact?.uri_or_path ||
+        !WEEKLY_SHA256_PATTERN.test(verificationArtifact?.content_sha256 ?? '') ||
+        (!isExample && WEEKLY_PLACEHOLDER_HASH_PATTERN.test(
+          verificationArtifact?.content_sha256 ?? '',
+        )) ||
+        (!isExample && WEEKLY_EXAMPLE_MARKERS.some((marker) =>
+          verificationArtifact?.uri_or_path.toLowerCase().includes(marker)))
+      ) {
+        fail('input_verification_artifact_invalid', `${at}.cutoff_evidence`,
+          'Record-level verification must be backed by a content-addressed verification artifact.');
+      }
     }
   });
+
+  for (const evidence of context.record_level_input_evidence ?? []) {
+    if (!seenInputIds.has(evidence.input_id)) {
+      fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
+        `Verification evidence references undeclared input "${evidence.input_id}".`);
+    }
+  }
 
   // Required classes must actually be present as inputs.
   for (const required of WEEKLY_REQUIRED_INPUT_CLASSES) {
@@ -927,6 +1534,25 @@ export function validateWeeklyPublication(
 
   // --- rows: recompute rather than trust ----------------------------------
   const censusRowCount = manifest.population_census?.row_count ?? 0;
+
+  if (!isCanonicalUtc(manifest.population_census?.effective_at)) {
+    fail('census_effective_at_invalid', 'population_census.effective_at',
+      'Census effective_at must be a canonical UTC instant.');
+  } else if (
+    cutoffMs !== null &&
+    new Date(manifest.population_census.effective_at).getTime() > cutoffMs
+  ) {
+    fail('census_post_cutoff', 'population_census.effective_at',
+      'Census effective_at may not be after forecast_cutoff.');
+  }
+  if (
+    manifest.population_census?.census_artifact_ref?.content_sha256 !==
+      manifest.population_census?.census_sha256 ||
+    !WEEKLY_SHA256_PATTERN.test(manifest.population_census?.census_sha256 ?? '')
+  ) {
+    fail('census_membership_mismatch', 'population_census',
+      'Census reference digest must equal census_sha256 and use lowercase SHA-256 syntax.');
+  }
 
   if (rows.length === 0 && censusRowCount > 0) {
     fail('empty_rows_for_non_empty_census', 'rows',
@@ -1004,7 +1630,11 @@ export function validateWeeklyPublication(
     const rowIds = new Set(rows.map((r) => r.population_row_id));
     const missing = context.census.population_row_ids.filter((id) => !rowIds.has(id));
     const extra = Array.from(rowIds).filter((id) => !censusIds.has(id));
-    if (missing.length > 0 || extra.length > 0) {
+    if (
+      context.census.population_row_ids.length !== censusRowCount ||
+      censusIds.size !== context.census.population_row_ids.length ||
+      missing.length > 0 || extra.length > 0
+    ) {
       fail('census_membership_mismatch', 'rows',
         `Rows do not match census membership (missing ${missing.length}, extra ${extra.length}).`);
     }
@@ -1020,6 +1650,17 @@ export function validateWeeklyPublication(
 
   rows.forEach((row, index) => {
     const at = `rows[${index}]`;
+    if (!['resolved', 'unresolved', 'conflicting'].includes(row.identity?.identity_status)) {
+      fail('available_row_identity_unresolved', `${at}.identity.identity_status`,
+        'Identity status must be resolved, unresolved, or conflicting.');
+    }
+    if (
+      (row.identity?.identity_status === 'resolved' && !row.identity.canonical_player_id) ||
+      (row.identity?.identity_status !== 'resolved' && row.identity?.canonical_player_id !== null)
+    ) {
+      fail('available_row_identity_unresolved', `${at}.identity.canonical_player_id`,
+        'Canonical id presence must agree with identity_status.');
+    }
     if (row.identity?.fuzzy_join_used !== false) {
       fail('identity_fuzzy_join_used', `${at}.identity`, 'Fuzzy identity joining is not permitted.');
     }
@@ -1033,9 +1674,24 @@ export function validateWeeklyPublication(
     if (row.uncertainty?.status === 'unavailable_not_calibrated') {
       const u = row.uncertainty;
       if (u.lower_quantile !== null || u.median !== null || u.upper_quantile !== null ||
-          u.interval_lower !== null || u.interval_upper !== null || u.method_id !== null) {
+          u.interval_lower !== null || u.interval_upper !== null || u.method_id !== null ||
+          u.method_version !== null) {
         fail('fabricated_uncertainty', `${at}.uncertainty`, 'Range fields must be null when uncertainty is not calibrated.');
       }
+    } else if (row.uncertainty?.status === 'calibrated') {
+      const u = row.uncertainty;
+      if (
+        !u.method_id || !u.method_version ||
+        ![u.lower_quantile, u.median, u.upper_quantile, u.interval_lower, u.interval_upper]
+          .every((value) => typeof value === 'number' && Number.isFinite(value)) ||
+        u.lower_quantile > u.median || u.median > u.upper_quantile ||
+        u.interval_lower > u.median || u.median > u.interval_upper
+      ) {
+        fail('fabricated_uncertainty', `${at}.uncertainty`,
+          'Calibrated uncertainty requires a method and finite, ordered range values.');
+      }
+    } else {
+      fail('fabricated_uncertainty', `${at}.uncertainty`, 'Unknown uncertainty status.');
     }
     for (const id of row.input_ids_used ?? []) {
       if (!declaredInputIds.has(id)) {
@@ -1050,6 +1706,10 @@ export function validateWeeklyPublication(
       if (!available.identity?.canonical_player_id || available.identity.identity_status !== 'resolved') {
         fail('available_row_identity_unresolved', `${at}.identity`,
           'An available forecast requires a resolved canonical identity.');
+      }
+      if (!(WEEKLY_SUPPORTED_POSITIONS as readonly string[]).includes(available.identity.position ?? '')) {
+        fail('available_row_identity_unresolved', `${at}.identity.position`,
+          'An available forecast requires a supported offensive position.');
       }
       if (typeof available.point_forecast !== 'number' || !Number.isFinite(available.point_forecast)) {
         fail('available_row_point_forecast_invalid', `${at}.point_forecast`, 'Point forecast must be finite.');
@@ -1072,7 +1732,33 @@ export function validateWeeklyPublication(
           'An unavailable row requires at least one typed reason.');
       }
     }
+
+    const identityRef = row.identity?.source_identity_ref;
+    if (
+      !identityRef?.uri_or_path ||
+      !identityRef?.record_id ||
+      !identityRef?.content_sha256 ||
+      !WEEKLY_SHA256_PATTERN.test(identityRef.content_sha256)
+    ) {
+      fail('available_row_identity_unresolved', `${at}.identity.source_identity_ref`,
+        'Every row requires a content-addressed source identity record.');
+    }
   });
+
+  const availableUncertaintyStatuses = new Set(
+    availableRows.map((row) => row.uncertainty.status),
+  );
+  if (
+    (manifest.uncertainty_status === 'unavailable_not_calibrated' &&
+      (availableUncertaintyStatuses.size > 1 || availableUncertaintyStatuses.has('calibrated'))) ||
+    (manifest.uncertainty_status === 'calibrated' &&
+      (availableRows.length === 0 || availableUncertaintyStatuses.size !== 1 ||
+        !availableUncertaintyStatuses.has('calibrated'))) ||
+    !['unavailable_not_calibrated', 'calibrated'].includes(manifest.uncertainty_status)
+  ) {
+    fail('uncertainty_contract_mismatch', 'uncertainty_status',
+      'Manifest uncertainty status must exactly describe every available row.');
+  }
 
   // Ranks: unique, contiguous 1..N, and consistent with the documented ordering.
   const ranks = availableRows.map((r) => r.rank).filter((r) => Number.isInteger(r) && r >= 1);
@@ -1087,7 +1773,10 @@ export function validateWeeklyPublication(
     } else {
       const expected = [...availableRows].sort((a, b) => {
         if (b.point_forecast !== a.point_forecast) return b.point_forecast - a.point_forecast;
-        return a.identity.canonical_player_id.localeCompare(b.identity.canonical_player_id);
+        return compareForwardCanonicalStrings(
+          a.identity.canonical_player_id,
+          b.identity.canonical_player_id,
+        );
       });
       expected.forEach((row, index) => {
         if (row.rank !== index + 1) {
@@ -1107,12 +1796,71 @@ export function validateWeeklyPublication(
     fail('manifest_lifecycle_claims_eligibility', 'lifecycle.state',
       'A manifest may only declare draft or candidate.');
   }
+  if (manifest.lifecycle?.admission_requires_receipt !== true) {
+    fail('manifest_lifecycle_claims_eligibility', 'lifecycle.admission_requires_receipt',
+      'A weekly publication always requires a separately trusted receipt.');
+  }
+  if (
+    manifest.reliability_tracking?.truth_label_owner !== 'TIBER-Data' ||
+    manifest.reliability_tracking?.truth_label_artifact_kind !== 'realized_weekly_ppr_outcomes' ||
+    manifest.reliability_tracking?.forge_role !== 'explanatory_context_only' ||
+    manifest.reliability_tracking?.forge_is_truth_label !== false ||
+    manifest.reliability_tracking?.truth_label_ref !== null ||
+    manifest.reliability_tracking?.scored_at !== null
+  ) {
+    fail('reliability_contract_invalid', 'reliability_tracking',
+      'Pre-week publication truth remains unscored, TIBER-Data-owned, and FORGE explanatory only.');
+  }
 
   // --- digests ------------------------------------------------------------
   const recomputedRowsDigest = canonicalForwardJsonSha256(rows);
   if (manifest.digests?.player_rows_sha256 !== recomputedRowsDigest) {
     fail('player_rows_digest_mismatch', 'digests.player_rows_sha256',
       'Declared player-rows digest does not match the supplied rows.');
+  }
+  if (
+    manifest.digests?.serialization?.serializer_id !== WEEKLY_SERIALIZER_ID ||
+    manifest.digests?.serialization?.serializer_version !== WEEKLY_SERIALIZER_VERSION
+  ) {
+    fail('serializer_identity_invalid', 'digests.serialization',
+      'Publication must use the canonical serializer identity and version.');
+  }
+  if (
+    manifest.outputs?.length !== 1 ||
+    manifest.outputs[0]?.artifact_type !== WEEKLY_PLAYER_ROWS_ARTIFACT_TYPE ||
+    manifest.outputs[0]?.artifact_version !== WEEKLY_PLAYER_ROWS_ARTIFACT_VERSION ||
+    !manifest.outputs[0]?.uri_or_path ||
+    manifest.outputs[0]?.content_sha256 !== recomputedRowsDigest
+  ) {
+    fail('output_binding_invalid', 'outputs',
+      'Exactly one canonical player-rows output must bind the supplied rows digest.');
+  }
+
+  const contentHashes: Array<[string, string | null | undefined]> = [
+    ['population_census.census_sha256', manifest.population_census?.census_sha256],
+    ['population_census.census_artifact_ref.content_sha256',
+      manifest.population_census?.census_artifact_ref?.content_sha256],
+    ['scoring_profile.profile_sha256', manifest.scoring_profile?.profile_sha256],
+    ['scoring_profile.source_reconciliation.evidence_ref.content_sha256',
+      manifest.scoring_profile?.source_reconciliation?.evidence_ref?.content_sha256],
+    ['model.implementation_commit_evidence_sha256',
+      manifest.model?.implementation_commit_evidence_sha256],
+    ['model.configuration_sha256', manifest.model?.configuration_sha256],
+    ['model.feature_configuration_sha256', manifest.model?.feature_configuration_sha256],
+    ['model.fitted_model_ref.content_sha256', manifest.model?.fitted_model_ref?.content_sha256],
+    ['digests.player_rows_sha256', manifest.digests?.player_rows_sha256],
+    ...inputs.map((input, index) =>
+      [`artifact_inputs[${index}].content_sha256`, input.content_sha256] as [string, string]),
+    ...(manifest.outputs ?? []).map((output, index) =>
+      [`outputs[${index}].content_sha256`, output.content_sha256] as [string, string]),
+    ...rows.map((row, index) =>
+      [`rows[${index}].identity.source_identity_ref.content_sha256`,
+        row.identity?.source_identity_ref?.content_sha256] as [string, string | null]),
+  ];
+  for (const [path, value] of contentHashes) {
+    if (value !== undefined && value !== null && !WEEKLY_SHA256_PATTERN.test(value)) {
+      fail('invalid_sha256', path, 'Expected a lowercase 64-character SHA-256.');
+    }
   }
 
   // --- example vs real ----------------------------------------------------
@@ -1134,17 +1882,6 @@ export function validateWeeklyPublication(
           'A real publication may not carry a placeholder hash.');
       }
     }
-    const hashFields: Array<[string, string | null | undefined]> = [
-      ['population_census.census_sha256', manifest.population_census?.census_sha256],
-      ['model.configuration_sha256', manifest.model?.configuration_sha256],
-      ['model.feature_configuration_sha256', manifest.model?.feature_configuration_sha256],
-      ['digests.player_rows_sha256', manifest.digests?.player_rows_sha256],
-    ];
-    for (const [path, value] of hashFields) {
-      if (typeof value !== 'string' || !WEEKLY_SHA256_PATTERN.test(value)) {
-        fail('invalid_sha256', path, 'Expected a lowercase 64-character SHA-256.');
-      }
-    }
     for (const [index, input] of inputs.entries()) {
       if (!WEEKLY_COMMIT_SHA_PATTERN.test(input.owner_commit_sha) ||
           /^0{40}$/.test(input.owner_commit_sha)) {
@@ -1152,11 +1889,18 @@ export function validateWeeklyPublication(
           'A real publication requires a genuine 40-character owner commit SHA.');
       }
     }
+    if (
+      !WEEKLY_COMMIT_SHA_PATTERN.test(manifest.model?.implementation_commit_sha ?? '') ||
+      /^0{40}$/.test(manifest.model?.implementation_commit_sha ?? '')
+    ) {
+      fail('placeholder_commit_in_real_publication', 'model.implementation_commit_sha',
+        'A real publication requires a genuine Forecast implementation commit SHA.');
+    }
   }
 
   return {
     validator_id: 'tiber-weekly-forecast-publication-validator',
-    validator_version: '2.0.0',
+    validator_version: '3.0.0',
     valid: errors.length === 0,
     promotion_authority: false,
     is_schema_example: isExample,
@@ -1234,10 +1978,51 @@ export function admitWeeklyPublication(
   if (!parsedReceipt.ok) return refuse('admission_receipt_missing_or_malformed', parsedReceipt.errors);
   const receipt = parsedReceipt.value;
 
+  // The receipt is not its own authority. Its exact digest and decision source
+  // must be pinned outside the request documents by the consuming deployment.
+  const trusted = context.admission_authority;
+  if (!trusted) return refuse('trusted_admission_binding_missing');
+  if (
+    !WEEKLY_SHA256_PATTERN.test(trusted.receipt_sha256) ||
+    !WEEKLY_SHA256_PATTERN.test(trusted.decision_ref_content_sha256) ||
+    !trusted.authority_id || !trusted.authority_repository ||
+    !trusted.decision_ref_uri_or_path || !trusted.decision_ref_record_id
+  ) return refuse('trusted_admission_binding_malformed');
+  const receiptDigest = weeklyAdmissionReceiptSha256(receipt);
+  if (receiptDigest !== trusted.receipt_sha256) return refuse('receipt_not_trusted');
+  if (
+    receipt.authority_id !== trusted.authority_id ||
+    receipt.authority_repository !== trusted.authority_repository ||
+    receipt.decision_ref.uri_or_path !== trusted.decision_ref_uri_or_path ||
+    receipt.decision_ref.content_sha256 !== trusted.decision_ref_content_sha256 ||
+    receipt.decision_ref.record_id !== trusted.decision_ref_record_id
+  ) return refuse('receipt_authority_mismatch');
+
+  if (receipt.document_kind !== 'weekly_publication_admission_receipt') {
+    return refuse('receipt_identity_invalid');
+  }
   if (receipt.consumer_eligibility !== 'eligible_admitted') return refuse('receipt_not_eligible');
   if (receipt.admission_path !== 'governed_preseason_publication') return refuse('receipt_wrong_admission_path');
   if (receipt.in_season_gate_weakened !== false) return refuse('receipt_weakened_in_season_gate');
   if (receipt.publication_id !== manifest.publication_id) return refuse('receipt_publication_id_mismatch');
+  if (
+    !isCanonicalUtc(receipt.decided_at) ||
+    new Date(receipt.decided_at).getTime() < new Date(manifest.generated_at).getTime() ||
+    !WEEKLY_SHA256_PATTERN.test(receipt.manifest_sha256) ||
+    !WEEKLY_SHA256_PATTERN.test(receipt.player_rows_sha256) ||
+    !WEEKLY_SHA256_PATTERN.test(receipt.decision_ref.content_sha256) ||
+    WEEKLY_PLACEHOLDER_HASH_PATTERN.test(receipt.decision_ref.content_sha256) ||
+    !receipt.decision_ref.record_id ||
+    !receipt.decided_by
+  ) return refuse('receipt_decision_evidence_invalid');
+
+  const receiptStrings: string[] = [];
+  collectStrings(receipt, receiptStrings);
+  if (receiptStrings.some((value) =>
+    WEEKLY_PLACEHOLDER_HASH_PATTERN.test(value) ||
+    WEEKLY_EXAMPLE_MARKERS.some((marker) => value.toLowerCase().includes(marker)))) {
+    return refuse('receipt_example_or_placeholder_content');
+  }
 
   // The binding: the receipt admits exactly these bytes and no others.
   const manifestDigest = weeklyManifestSha256(manifest);
