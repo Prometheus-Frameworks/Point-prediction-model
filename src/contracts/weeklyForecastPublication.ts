@@ -657,6 +657,8 @@ export type WeeklyValidationErrorCode =
   | 'empty_rows_for_non_empty_census'
   | 'census_membership_unverified'
   | 'census_provenance_ungoverned'
+  | 'calibrated_uncertainty_unsupported'
+  | 'identity_evidence_unbound'
   | 'census_membership_mismatch'
   | 'identity_fuzzy_join_used'
   | 'identity_synthetic_namespace_used'
@@ -1767,17 +1769,17 @@ export function validateWeeklyPublication(
         fail('fabricated_uncertainty', `${at}.uncertainty`, 'Range fields must be null when uncertainty is not calibrated.');
       }
     } else if (row.uncertainty?.status === 'calibrated') {
-      const u = row.uncertainty;
-      if (
-        !u.method_id || !u.method_version ||
-        ![u.lower_quantile, u.median, u.upper_quantile, u.interval_lower, u.interval_upper]
-          .every((value) => typeof value === 'number' && Number.isFinite(value)) ||
-        u.lower_quantile > u.median || u.median > u.upper_quantile ||
-        u.interval_lower > u.median || u.median > u.interval_upper
-      ) {
-        fail('fabricated_uncertainty', `${at}.uncertainty`,
-          'Calibrated uncertainty requires a method and finite, ordered range values.');
-      }
+      // Structural checks — a method string and finite, ordered numbers — are
+      // satisfiable by fabrication: arbitrary method ids and any ordered
+      // triple would pass. There is no calibration-evidence producer for this
+      // publication and no verification context that could bind one, so
+      // `calibrated` is categorically inadmissible here rather than admissible
+      // on self-declaration. Calibration is a parked, operator-owned follow-up;
+      // when it lands it must arrive with independently verified evidence and
+      // its own contract revision.
+      fail('calibrated_uncertainty_unsupported', `${at}.uncertainty.status`,
+        'This contract is point-only: calibrated uncertainty cannot be admitted ' +
+        'without independently verified calibration evidence.');
     } else {
       fail('fabricated_uncertainty', `${at}.uncertainty`, 'Unknown uncertainty status.');
     }
@@ -1830,6 +1832,26 @@ export function validateWeeklyPublication(
     ) {
       fail('available_row_identity_unresolved', `${at}.identity.source_identity_ref`,
         'Every row requires a content-addressed source identity record.');
+    } else {
+      // Presence and hash *shape* are not evidence. Any nonempty URI plus any
+      // syntactically valid digest would otherwise let a publication attach the
+      // wrong canonical_player_id to a real population row and still be
+      // admitted — producing forecasts for the wrong players.
+      //
+      // The identity record is therefore bound to the governed census: its
+      // digest must be the census the manifest declares (which the verification
+      // context has already pinned to the governed TIBER-Data owner and
+      // verified against consumer-owned evidence), and its record must be *this*
+      // row's census record rather than some other row's.
+      if (identityRef.content_sha256 !== manifest.population_census.census_sha256) {
+        fail('identity_evidence_unbound', `${at}.identity.source_identity_ref.content_sha256`,
+          'Row identity evidence must be bound to the verified governed census digest.');
+      }
+      if (identityRef.record_id !== row.population_row_id) {
+        fail('identity_evidence_unbound', `${at}.identity.source_identity_ref.record_id`,
+          `Row identity evidence must reference this row's census record ` +
+          `("${row.population_row_id}"), not "${identityRef.record_id}".`);
+      }
     }
   });
 
@@ -1846,6 +1868,12 @@ export function validateWeeklyPublication(
   ) {
     fail('uncertainty_contract_mismatch', 'uncertainty_status',
       'Manifest uncertainty status must exactly describe every available row.');
+  }
+  // The manifest cannot declare calibration either — otherwise a rows-free
+  // document could assert a calibrated publication the row check never sees.
+  if (manifest.uncertainty_status === 'calibrated') {
+    fail('calibrated_uncertainty_unsupported', 'uncertainty_status',
+      'This contract is point-only: a publication may not declare calibrated uncertainty.');
   }
 
   // Ranks: unique, contiguous 1..N, and consistent with the documented ordering.

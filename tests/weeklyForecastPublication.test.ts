@@ -541,6 +541,49 @@ describe('adversarial: 12 — the census must be governed, not merely self-consi
   });
 });
 
+describe('adversarial: 13 — uncertainty cannot be calibrated by assertion', () => {
+  it('rejects a row claiming calibration with plausible, well-ordered numbers', () => {
+    // Every structural check would pass: a method string, finite values, and a
+    // correctly ordered interval. None of it is evidence.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    (realRows[0] as any).uncertainty = {
+      status: 'calibrated',
+      method_id: 'conformal-v1',
+      method_version: '1.0.0',
+      lower_quantile: 8.1, median: 14.2, upper_quantile: 21.0,
+      interval_lower: 7.4, interval_upper: 22.6,
+    };
+    expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .toContain('calibrated_uncertainty_unsupported');
+  });
+
+  it('rejects a manifest declaring calibrated uncertainty', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    real.uncertainty_status = 'calibrated' as any;
+    expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .toContain('calibrated_uncertainty_unsupported');
+  });
+});
+
+describe('adversarial: 14 — identity evidence must be bound, not merely present', () => {
+  it('rejects an identity record whose digest is not the governed census', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    (realRows[0] as any).identity.source_identity_ref.content_sha256 = 'a'.repeat(64);
+    expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .toContain('identity_evidence_unbound');
+  });
+
+  it('rejects an identity record belonging to a different population row', () => {
+    // The attack this closes: a valid population row carrying another player's
+    // canonical identity, with a syntactically perfect evidence reference.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    (realRows[0] as any).identity.source_identity_ref.record_id =
+      realRows[1].population_row_id;
+    expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .toContain('identity_evidence_unbound');
+  });
+});
+
 describe('adversarial: 6 — row altered after digest creation', () => {
   it('detects a mutated score against the declared rows digest', () => {
     const tamperedRows = clone(rows);
