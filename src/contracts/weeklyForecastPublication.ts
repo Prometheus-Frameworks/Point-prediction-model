@@ -79,8 +79,32 @@ export const WEEKLY_CUTOFF_RULE = 'fact_available_at <= forecast_cutoff' as cons
 export const WEEKLY_RANK_BASIS = 'expected_generic_full_ppr_points_week' as const;
 export const WEEKLY_TARGET_SEASON = 2026 as const;
 export const WEEKLY_TARGET_WEEK = 1 as const;
+
+/**
+ * Contract-owned pre-kickoff deadline for the 2026 Week 1 publication.
+ *
+ * The entire `governed_preseason_publication` path assumes every fact backing
+ * the forecast was knowable before Week 1 began. Prohibiting in-season input
+ * *classes* is not sufficient on its own: without a declared ceiling, a
+ * document could move its `forecast_cutoff`, census `effective_at`, input
+ * evidence and `generated_at` into the regular season, keep every class label
+ * legal, and still be admitted through the preseason path — carrying exactly
+ * the information the prohibited-class list exists to keep out.
+ *
+ * This is a policy boundary owned by this contract, **not** an ingested
+ * schedule. A real publication whose governed schedule disagrees must amend
+ * this constant deliberately; it may not declare its own deadline.
+ */
+export const WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC = '2026-09-10T20:00:00.000Z' as const;
 export const WEEKLY_FORECAST_REPOSITORY =
   'Prometheus-Frameworks/TIBER-Forecast' as const;
+/**
+ * The only repository whose census may bound this publication's population.
+ * TIBER-Data owns census semantics; a population sourced from anywhere else —
+ * including this repository — is not a governed census.
+ */
+export const WEEKLY_GOVERNED_CENSUS_OWNER =
+  'Prometheus-Frameworks/TIBER-Data' as const;
 export const WEEKLY_INPUT_NORMALIZATION_RULE_ID = 'utc-instant-v1' as const;
 
 export const WEEKLY_SUPPORTED_POSITIONS = ['QB', 'RB', 'WR', 'TE'] as const;
@@ -606,6 +630,8 @@ export type WeeklyValidationErrorCode =
   | 'generated_at_missing'
   | 'generated_at_not_canonical_utc'
   | 'generated_at_before_cutoff'
+  | 'cutoff_after_prekickoff_deadline'
+  | 'generated_at_after_prekickoff_deadline'
   | 'policy_input_rules_altered'
   | 'policy_prohibited_list_altered'
   | 'policy_seasonal_boundary_altered'
@@ -630,6 +656,7 @@ export type WeeklyValidationErrorCode =
   | 'duplicate_population_row_id'
   | 'empty_rows_for_non_empty_census'
   | 'census_membership_unverified'
+  | 'census_provenance_ungoverned'
   | 'census_membership_mismatch'
   | 'identity_fuzzy_join_used'
   | 'identity_synthetic_namespace_used'
@@ -1150,9 +1177,24 @@ export function parseWeeklyAdmissionReceipt(
  * `census_membership_unverified` and the consumer refuses admission.
  */
 export interface WeeklyVerificationContext {
+  /**
+   * Consumer-owned census evidence. Like `admission_authority`, this must come
+   * from the consumer's own resolution of the governed TIBER-Data census — not
+   * from the publisher supplying the manifest.
+   *
+   * The digest and row ids alone only prove the manifest is internally
+   * consistent: a publisher holding both sides could select an arbitrary
+   * population, hash it, echo it here, and pass admission while silently
+   * omitting legitimate players. `owner_repository` and `semantics_ref` are
+   * therefore pinned against the governed owner so the population's provenance
+   * is asserted independently of the document being tested.
+   */
   census?: {
     census_sha256: string;
     population_row_ids: readonly string[];
+    owner_repository: string;
+    semantics_ref: string;
+    source_uri_or_path: string;
   };
   /**
    * Verification results produced from the exact source bytes. An input id by
@@ -1212,8 +1254,14 @@ function collectStrings(value: unknown, out: string[], depth = 0): void {
 }
 
 function isCanonicalUtc(value: unknown): value is string {
-  return typeof value === 'string' && WEEKLY_UTC_INSTANT_PATTERN.test(value) &&
-    !Number.isNaN(new Date(value).getTime());
+  if (typeof value !== 'string' || !WEEKLY_UTC_INSTANT_PATTERN.test(value)) return false;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return false;
+  // The regex admits impossible calendar dates that `Date` silently rolls over
+  // (`2026-09-31T00:00:00.000Z` becomes October 1 rather than NaN). Without a
+  // round trip, every downstream cutoff comparison would use an instant other
+  // than the one written in the artifact.
+  return parsed.toISOString() === value;
 }
 
 /**
@@ -1289,6 +1337,24 @@ export function validateWeeklyPublication(
     if (new Date(manifest.generated_at).getTime() < new Date(manifest.forecast_cutoff).getTime()) {
       fail('generated_at_before_cutoff', 'generated_at', 'generated_at must be at or after forecast_cutoff.');
     }
+  }
+  // Both timestamps are capped at the contract-owned pre-kickoff deadline.
+  // `generated_at >= forecast_cutoff` alone lets a document slide the whole
+  // window into the regular season while keeping every input-class label legal.
+  const preKickoffMs = new Date(WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC).getTime();
+  if (
+    isCanonicalUtc(manifest.forecast_cutoff) &&
+    new Date(manifest.forecast_cutoff).getTime() > preKickoffMs
+  ) {
+    fail('cutoff_after_prekickoff_deadline', 'forecast_cutoff',
+      `forecast_cutoff must be at or before the Week 1 pre-kickoff deadline (${WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC}).`);
+  }
+  if (
+    isCanonicalUtc(manifest.generated_at) &&
+    new Date(manifest.generated_at).getTime() > preKickoffMs
+  ) {
+    fail('generated_at_after_prekickoff_deadline', 'generated_at',
+      `generated_at must be at or before the Week 1 pre-kickoff deadline (${WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC}).`);
   }
 
   // --- canonical policy cannot be weakened by the document -----------------
@@ -1622,6 +1688,28 @@ export function validateWeeklyPublication(
     fail('census_membership_unverified', 'population_census',
       'Census membership cannot be verified from a reference alone; supply verified census evidence.');
   } else {
+    // Provenance first. Digest equality below only proves the manifest agrees
+    // with the context; it says nothing about where that population came from.
+    // The consumer-owned context must independently name the governed owner and
+    // a real semantics reference, and the manifest must agree with it — so an
+    // arbitrary self-selected population cannot pass by being internally tidy.
+    const censusOwnerGoverned =
+      context.census.owner_repository === WEEKLY_GOVERNED_CENSUS_OWNER &&
+      manifest.population_census.semantics_owner === WEEKLY_GOVERNED_CENSUS_OWNER;
+    const semanticsPinned =
+      typeof context.census.semantics_ref === 'string' &&
+      context.census.semantics_ref.trim().length > 0 &&
+      context.census.semantics_ref === manifest.population_census.semantics_ref;
+    const sourcePinned =
+      typeof context.census.source_uri_or_path === 'string' &&
+      context.census.source_uri_or_path.trim().length > 0 &&
+      context.census.source_uri_or_path ===
+        manifest.population_census.census_artifact_ref?.uri_or_path;
+    if (!censusOwnerGoverned || !semanticsPinned || !sourcePinned) {
+      fail('census_provenance_ungoverned', 'population_census',
+        `Census must be pinned to the governed owner (${WEEKLY_GOVERNED_CENSUS_OWNER}) ` +
+        'with a matching semantics reference and source path in the verification context.');
+    }
     if (context.census.census_sha256 !== manifest.population_census.census_sha256) {
       fail('census_membership_mismatch', 'population_census.census_sha256',
         'Verification context census digest does not match the manifest.');

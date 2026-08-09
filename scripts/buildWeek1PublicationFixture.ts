@@ -32,6 +32,7 @@ import {
   WEEKLY_CANONICAL_INPUT_CLASS_RULES,
   WEEKLY_CUTOFF_RULE,
   WEEKLY_DEFAULT_CONSUMER_ELIGIBILITY,
+  WEEKLY_GOVERNED_CENSUS_OWNER,
   WEEKLY_OUTPUT_KIND,
   WEEKLY_PLAYER_ROWS_ARTIFACT_TYPE,
   WEEKLY_PLAYER_ROWS_ARTIFACT_VERSION,
@@ -463,11 +464,16 @@ function buildManifest(rowsSha256: string): WeeklyForecastPublicationManifest {
  * so the fixture can demonstrate a *verified* validation rather than an asserted
  * one.
  */
-function exampleCensusContext(): WeeklyVerificationContext {
+function exampleCensusContext(
+  forManifest: WeeklyForecastPublicationManifest,
+): WeeklyVerificationContext {
   return {
     census: {
       census_sha256: PLACEHOLDER_SHA,
       population_row_ids: EXAMPLE_ROWS.map((row) => row.population_row_id),
+      owner_repository: WEEKLY_GOVERNED_CENSUS_OWNER,
+      semantics_ref: forManifest.population_census.semantics_ref,
+      source_uri_or_path: forManifest.population_census.census_artifact_ref.uri_or_path,
     },
   };
 }
@@ -480,7 +486,7 @@ function main() {
   const manifest = buildManifest(rowsSha256);
   const manifestJson = canonicalForwardJson(manifest);
 
-  const validation = validateWeeklyPublication(manifest, EXAMPLE_ROWS, exampleCensusContext());
+  const validation = validateWeeklyPublication(manifest, EXAMPLE_ROWS, exampleCensusContext(manifest));
   if (!validation.valid) {
     console.error('Fixture failed contract validation:');
     for (const issue of validation.errors) console.error(`  ${issue.code} @ ${issue.path}: ${issue.message}`);

@@ -15,6 +15,7 @@ import {
   WEEKLY_ADMISSION_RECEIPT_ARTIFACT_VERSION,
   WEEKLY_CANONICAL_INPUT_CLASS_RULES,
   WEEKLY_DEFAULT_CONSUMER_ELIGIBILITY,
+  WEEKLY_GOVERNED_CENSUS_OWNER,
   WEEKLY_PRESEASON_INPUT_CLASSES,
   WEEKLY_PROHIBITED_PRESEASON_INPUT_CLASSES,
   WEEKLY_PUBLICATION_ARTIFACT_VERSION,
@@ -94,6 +95,11 @@ function censusContext(
     census: {
       census_sha256: forManifest.population_census.census_sha256,
       population_row_ids: rowSet.map((r) => r.population_row_id),
+      // Consumer-owned provenance pin: the governed owner, the semantics
+      // reference and the source path the consumer resolved independently.
+      owner_repository: WEEKLY_GOVERNED_CENSUS_OWNER,
+      semantics_ref: forManifest.population_census.semantics_ref,
+      source_uri_or_path: forManifest.population_census.census_artifact_ref.uri_or_path,
     },
     record_level_input_evidence: recordLevelEvidence,
     admission_authority: receipt ? trustedBindingFor(receipt) : undefined,
@@ -480,6 +486,61 @@ describe('adversarial: canonical runtime semantics are load-bearing', () => {
   });
 });
 
+describe('adversarial: 11 — the preseason path cannot be slid into the season', () => {
+  it('rejects a forecast_cutoff after the Week 1 pre-kickoff deadline', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    real.forecast_cutoff = '2026-09-17T00:00:00.000Z';
+    real.generated_at = '2026-09-17T12:00:00.000Z';
+    expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .toContain('cutoff_after_prekickoff_deadline');
+  });
+
+  it('rejects a generated_at after the deadline even when the cutoff is legal', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    real.generated_at = '2026-09-14T12:00:00.000Z';
+    expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .toContain('generated_at_after_prekickoff_deadline');
+  });
+
+  it('rejects an impossible calendar date that Date would silently roll over', () => {
+    // 2026-09-31 does not exist; Date normalises it to October 1, which would
+    // otherwise sail past the deadline comparison as a different instant.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    real.forecast_cutoff = '2026-09-31T00:00:00.000Z';
+    expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .toContain('cutoff_not_canonical_utc');
+  });
+});
+
+describe('adversarial: 12 — the census must be governed, not merely self-consistent', () => {
+  it('rejects a census context that does not name the governed owner', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    (context.census as any).owner_repository = 'Prometheus-Frameworks/TIBER-Forecast';
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .toContain('census_provenance_ungoverned');
+  });
+
+  it('rejects a self-selected population that is internally consistent', () => {
+    // The publisher controls both sides: it drops a player, rehashes, and
+    // echoes its own digest back through the context. Digest equality alone
+    // would accept this; pinned provenance is what refuses it.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    (context.census as any).semantics_ref = 'example://self-selected-population';
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .toContain('census_provenance_ungoverned');
+  });
+
+  it('rejects a census whose source path is not the one the consumer pinned', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    (context.census as any).source_uri_or_path = 'tiber-forecast://locally-invented-census';
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .toContain('census_provenance_ungoverned');
+  });
+});
+
 describe('adversarial: 6 — row altered after digest creation', () => {
   it('detects a mutated score against the declared rows digest', () => {
     const tamperedRows = clone(rows);
@@ -575,7 +636,13 @@ describe('adversarial: 8 — mismatched status counts and identity coverage', ()
 
   it('rejects rows that do not match verified census membership', () => {
     const result = validateWeeklyPublication(manifest, rows, {
-      census: { census_sha256: manifest.population_census.census_sha256, population_row_ids: ['other-1', 'other-2', 'other-3', 'other-4'] },
+      census: {
+        census_sha256: manifest.population_census.census_sha256,
+        population_row_ids: ['other-1', 'other-2', 'other-3', 'other-4'],
+        owner_repository: WEEKLY_GOVERNED_CENSUS_OWNER,
+        semantics_ref: manifest.population_census.semantics_ref,
+        source_uri_or_path: manifest.population_census.census_artifact_ref.uri_or_path,
+      },
     });
     expect(codes(result)).toContain('census_membership_mismatch');
   });
