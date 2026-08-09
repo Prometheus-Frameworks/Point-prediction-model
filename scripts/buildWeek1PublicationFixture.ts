@@ -29,6 +29,7 @@ import {
   TIBER_GENERIC_FULL_PPR_V1_SHA256,
 } from '../src/contracts/genericFullPprProfile.js';
 import {
+  WEEKLY_CANONICAL_INPUT_CLASS_RULES,
   WEEKLY_CUTOFF_RULE,
   WEEKLY_DEFAULT_CONSUMER_ELIGIBILITY,
   WEEKLY_OUTPUT_KIND,
@@ -38,14 +39,16 @@ import {
   WEEKLY_PUBLICATION_ARTIFACT_TYPE,
   WEEKLY_PUBLICATION_SCHEMA_EXAMPLE_VERSION,
   WEEKLY_RANK_BASIS,
+  WEEKLY_RANK_ORDERING_RULE,
   WEEKLY_SCORING_PROFILE_ID,
   WEEKLY_SEASONAL_CANDIDATE_BOUNDARY,
   WEEKLY_SERIALIZER_ID,
   WEEKLY_SERIALIZER_VERSION,
   WEEKLY_SUPPORTED_POSITIONS,
   validateWeeklyPublication,
+  weeklyManifestSha256,
   type WeeklyPlayerRow,
-  type WeeklyPreseasonInputClassRule,
+  type WeeklyVerificationContext,
 } from '../src/contracts/weeklyForecastPublication.js';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
@@ -58,58 +61,6 @@ const FORECAST_CUTOFF = '2026-09-09T00:00:00.000Z'; // day before the Week 1 ope
 const GENERATED_AT = '2026-09-09T12:00:00.000Z';
 const CENSUS_EFFECTIVE_AT = '2026-09-08T00:00:00.000Z';
 const PLACEHOLDER_SHA = 'e'.repeat(64);
-
-/** The admissible preseason input classes and how each is time-gated. */
-const INPUT_CLASS_RULES: readonly WeeklyPreseasonInputClassRule[] = [
-  {
-    input_class: 'prior_season_realized_outcomes',
-    availability_rule_id: 'prior_season_final_and_governed',
-    source_timestamp_locator: 'artifact.source_as_of',
-    owner_repository: 'Prometheus-Frameworks/TIBER-Data',
-    required: true,
-    notes: 'Realized 2025 weekly PPR outcomes. Prior season only; never current season.',
-  },
-  {
-    input_class: 'prior_season_usage_and_role',
-    availability_rule_id: 'prior_season_final_and_governed',
-    source_timestamp_locator: 'artifact.source_as_of',
-    owner_repository: 'Prometheus-Frameworks/TIBER-Data',
-    required: true,
-    notes: 'Prior-season usage/role aggregates.',
-  },
-  {
-    input_class: 'depth_chart_and_role_priors',
-    availability_rule_id: 'state_effective_at_or_before_cutoff',
-    source_timestamp_locator: 'record.effective_at',
-    owner_repository: 'Prometheus-Frameworks/TIBER-Data',
-    required: false,
-    notes: 'Preseason depth-chart state as of the cutoff.',
-  },
-  {
-    input_class: 'roster_and_team_assignment_state',
-    availability_rule_id: 'state_effective_at_or_before_cutoff',
-    source_timestamp_locator: 'record.effective_at',
-    owner_repository: 'Prometheus-Frameworks/TIBER-Data',
-    required: true,
-    notes: 'Team assignment / free-agency state. Drives roster_state_unresolved.',
-  },
-  {
-    input_class: 'schedule_and_opponent_context',
-    availability_rule_id: 'published_at_or_before_cutoff',
-    source_timestamp_locator: 'artifact.artifact_generated_at',
-    owner_repository: 'Prometheus-Frameworks/TIBER-Data',
-    required: false,
-    notes: 'Week 1 opponent context from the published schedule.',
-  },
-  {
-    input_class: 'player_availability_status',
-    availability_rule_id: 'state_effective_at_or_before_cutoff',
-    source_timestamp_locator: 'record.effective_at',
-    owner_repository: 'Prometheus-Frameworks/TIBER-Data',
-    required: false,
-    notes: 'Injury/availability designations known at the cutoff.',
-  },
-];
 
 /**
  * Illustrative rows.
@@ -149,7 +100,11 @@ const EXAMPLE_ROWS: readonly WeeklyPlayerRow[] = [
       interval_lower: null,
       interval_upper: null,
     },
-    input_ids_used: ['tiber-data-prior-season-outcomes-2025', 'tiber-data-roster-state-2026-w1'],
+    input_ids_used: [
+      'tiber-data-prior-season-outcomes-2025',
+      'tiber-data-prior-season-usage-2025',
+      'tiber-data-roster-state-2026-w1',
+    ],
     actual_outcome: null,
   },
   {
@@ -182,7 +137,11 @@ const EXAMPLE_ROWS: readonly WeeklyPlayerRow[] = [
       interval_lower: null,
       interval_upper: null,
     },
-    input_ids_used: ['tiber-data-prior-season-outcomes-2025', 'tiber-data-roster-state-2026-w1'],
+    input_ids_used: [
+      'tiber-data-prior-season-outcomes-2025',
+      'tiber-data-prior-season-usage-2025',
+      'tiber-data-roster-state-2026-w1',
+    ],
     actual_outcome: null,
   },
   {
@@ -274,6 +233,7 @@ function buildManifest(rowsSha256: string) {
       target_kind: 'single_scoring_week' as const,
       is_seasonal_total: false as const,
       rank_basis: WEEKLY_RANK_BASIS,
+      rank_ordering_rule: WEEKLY_RANK_ORDERING_RULE,
       scoring_profile_id: WEEKLY_SCORING_PROFILE_ID,
       league_specific: false as const,
       supported_positions: WEEKLY_SUPPORTED_POSITIONS,
@@ -284,7 +244,7 @@ function buildManifest(rowsSha256: string) {
     generated_at: GENERATED_AT,
     cutoff_rule: WEEKLY_CUTOFF_RULE,
 
-    preseason_input_class_rules: INPUT_CLASS_RULES,
+    preseason_input_class_rules: WEEKLY_CANONICAL_INPUT_CLASS_RULES,
     prohibited_input_classes: WEEKLY_PROHIBITED_PRESEASON_INPUT_CLASSES,
     artifact_inputs: [
       {
@@ -301,10 +261,39 @@ function buildManifest(rowsSha256: string) {
         cutoff_evidence: {
           source_timestamp_locator: 'artifact.source_as_of',
           normalization_rule_id: 'utc-instant-v1',
+          // Producer claim, named as such. The validator performs its own local
+          // comparison against forecast_cutoff and does not trust this field.
+          self_reported_status: 'eligible' as const,
+          // Honest default: record-level timestamps cannot be checked without
+          // the source bytes, so admission requires a verification context.
+          record_level_verification: 'unverified_requires_source_bytes' as const,
           record_count_eligible: censusRowCount,
           record_count_post_cutoff: 0,
           record_count_unresolved: 0,
-          validator_recomputed_status: 'eligible' as const,
+        },
+        limitations: ['Example fixture reference; not a real artifact.'],
+      },
+      {
+        // Required by the canonical policy; its absence was a real gap that the
+        // earlier validator did not catch.
+        input_id: 'tiber-data-prior-season-usage-2025',
+        input_class: 'prior_season_usage_and_role' as const,
+        owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+        owner_commit_sha: '0'.repeat(40),
+        artifact_type: 'prior_season_usage_role_aggregates',
+        artifact_version: 'v1',
+        uri_or_path: 'example://tiber-data/player_usage_role_2025',
+        content_sha256: PLACEHOLDER_SHA,
+        source_as_of: '2026-02-15T00:00:00.000Z',
+        availability_rule_id: 'prior_season_final_and_governed' as const,
+        cutoff_evidence: {
+          source_timestamp_locator: 'artifact.source_as_of',
+          normalization_rule_id: 'utc-instant-v1',
+          self_reported_status: 'eligible' as const,
+          record_level_verification: 'unverified_requires_source_bytes' as const,
+          record_count_eligible: censusRowCount,
+          record_count_post_cutoff: 0,
+          record_count_unresolved: 0,
         },
         limitations: ['Example fixture reference; not a real artifact.'],
       },
@@ -322,10 +311,15 @@ function buildManifest(rowsSha256: string) {
         cutoff_evidence: {
           source_timestamp_locator: 'record.effective_at',
           normalization_rule_id: 'utc-instant-v1',
+          // Producer claim, named as such. The validator performs its own local
+          // comparison against forecast_cutoff and does not trust this field.
+          self_reported_status: 'eligible' as const,
+          // Honest default: record-level timestamps cannot be checked without
+          // the source bytes, so admission requires a verification context.
+          record_level_verification: 'unverified_requires_source_bytes' as const,
           record_count_eligible: censusRowCount,
           record_count_post_cutoff: 0,
           record_count_unresolved: 0,
-          validator_recomputed_status: 'eligible' as const,
         },
         limitations: ['Example fixture reference; not a real artifact.'],
       },
@@ -382,6 +376,7 @@ function buildManifest(rowsSha256: string) {
       unresolved_population_row_ids: EXAMPLE_ROWS.filter(
         (r) => r.identity.identity_status === 'unresolved',
       ).map((r) => r.population_row_id),
+      conflicting_population_row_ids: [],
     },
     status_counts: {
       forecast_available: EXAMPLE_ROWS.filter((r) => r.forecast_status === 'forecast_available').length,
@@ -400,14 +395,9 @@ function buildManifest(rowsSha256: string) {
     lifecycle: {
       state: 'draft' as const,
       consumer_eligibility: WEEKLY_DEFAULT_CONSUMER_ELIGIBILITY,
-      admission: {
-        decided_by: null,
-        decided_at: null,
-        decision_ref: null,
-        admission_path: null,
-        in_season_gate_weakened: false as const,
-      },
-      superseded_by_publication_id: null,
+      // Admission is a separate hashed receipt bound to this manifest's digest;
+      // a manifest can never admit itself.
+      admission_requires_receipt: true as const,
     },
 
     reliability_tracking: {
@@ -437,17 +427,35 @@ function buildManifest(rowsSha256: string) {
     ],
   };
 
-  // The manifest digest covers the manifest with the digest block excluded.
-  const manifestSha256 = canonicalForwardJsonSha256(base);
+  // The manifest carries no digest *of itself* — that was self-referential, and
+  // it meant an admission edit invalidated the digest that identifies the
+  // publication. `weeklyManifestSha256()` hashes the finished manifest, and the
+  // admission receipt binds to that value.
   return {
     ...base,
     digests: {
       player_rows_sha256: rowsSha256,
-      manifest_sha256: manifestSha256,
       serialization: {
         serializer_id: WEEKLY_SERIALIZER_ID,
         serializer_version: WEEKLY_SERIALIZER_VERSION,
       },
+    },
+  };
+}
+
+/**
+ * Census verification context for the example.
+ *
+ * A real admission needs the census artifact itself; a reference plus a
+ * self-declared `one_to_one_complete` proves nothing. Derived from the same rows
+ * so the fixture can demonstrate a *verified* validation rather than an asserted
+ * one.
+ */
+function exampleCensusContext(): WeeklyVerificationContext {
+  return {
+    census: {
+      census_sha256: PLACEHOLDER_SHA,
+      population_row_ids: EXAMPLE_ROWS.map((row) => row.population_row_id),
     },
   };
 }
@@ -460,7 +468,7 @@ function main() {
   const manifest = buildManifest(rowsSha256);
   const manifestJson = canonicalForwardJson(manifest);
 
-  const validation = validateWeeklyPublication(manifest as never, EXAMPLE_ROWS);
+  const validation = validateWeeklyPublication(manifest as never, EXAMPLE_ROWS, exampleCensusContext());
   if (!validation.valid) {
     console.error('Fixture failed contract validation:');
     for (const issue of validation.errors) console.error(`  ${issue.code} @ ${issue.path}: ${issue.message}`);
@@ -472,7 +480,7 @@ function main() {
     const onDiskRows = readFileSync(ROWS_PATH, 'utf8');
     const identical = onDiskManifest === `${manifestJson}\n` && onDiskRows === `${rowsJson}\n`;
     console.log(identical ? 'byte-identical: yes' : 'byte-identical: NO');
-    console.log(`manifest_sha256=${manifest.digests.manifest_sha256}`);
+    console.log(`manifest_sha256=${weeklyManifestSha256(manifest as never)}`);
     console.log(`player_rows_sha256=${rowsSha256}`);
     process.exit(identical ? 0 : 1);
   }
@@ -482,7 +490,7 @@ function main() {
   writeFileSync(ROWS_PATH, `${rowsJson}\n`);
   console.log(`Wrote ${path.relative(REPO_ROOT, MANIFEST_PATH)}`);
   console.log(`Wrote ${path.relative(REPO_ROOT, ROWS_PATH)}`);
-  console.log(`manifest_sha256=${manifest.digests.manifest_sha256}`);
+  console.log(`manifest_sha256=${weeklyManifestSha256(manifest as never)}`);
   console.log(`player_rows_sha256=${rowsSha256}`);
 }
 

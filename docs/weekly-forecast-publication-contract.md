@@ -102,26 +102,94 @@ reserves that phrase for EPA. Product-facing translation ("Point Projection",
 scoped to this artifact type and lifecycle rather than used as loose product
 language.
 
-## Lifecycle — fail closed
+## Admission is a separate hashed receipt
 
-```
-draft → candidate → reviewed → admitted
-                              ↘ superseded / withdrawn
-```
+An earlier revision put a mutable `lifecycle.admission` block **inside** the
+manifest. That was self-inconsistent: the manifest is content-hashed, so editing
+the admission record to admit a publication invalidated the very digest that
+identifies it — and eligibility could be flipped by hand.
 
-`consumer_eligibility` defaults to `not_eligible_pending_admission`.
+Admission is therefore a **separate, independently hashed receipt**
+(`WeeklyAdmissionReceipt`) that binds to an exact `manifest_sha256` **and**
+`player_rows_sha256`. This mirrors the house pattern already on `main`
+(`src/contracts/forwardRun1/forwardRun1AdmissionBinding.ts`), where admission
+evidence is a hashed artifact separate from what it admits.
 
-`isWeeklyPublicationConsumable()` is a conjunction, so a partially-filled record
-can never read as eligible. **All** of the following must hold:
+What a manifest may declare about itself:
 
-- `state === 'admitted'`
-- `consumer_eligibility === 'eligible_admitted'`
-- `admission.decided_by`, `decided_at`, `decision_ref` all present
-- `admission.admission_path === 'governed_preseason_publication'`
-- `admission.in_season_gate_weakened === false`
+- `lifecycle.state` — `draft` or `candidate` only;
+- `lifecycle.consumer_eligibility` — the literal
+  `not_eligible_pending_admission`, and nothing else;
+- `lifecycle.admission_requires_receipt: true`.
+
+A manifest that self-declares `eligible_admitted` is rejected
+(`manifest_lifecycle_claims_eligibility`).
+
+A receipt is honoured only when **all** of the following hold:
+
+- `consumer_eligibility === 'eligible_admitted'`;
+- `admission_path === 'governed_preseason_publication'`;
+- `in_season_gate_weakened === false`;
+- `publication_id` matches the manifest;
+- `manifest_sha256` equals `weeklyManifestSha256(manifest)`;
+- `player_rows_sha256` equals the digest of the supplied rows.
+
+Consequence: mutating any manifest field, any row, any score, or the receipt
+itself breaks the binding and the consumer refuses. Re-admission requires a
+regenerated receipt over the new bytes — which is a fresh operator decision, by
+design.
 
 Admission via `meaningful_current_season_inputs` is **not** a valid route for a
 preseason publication — that is the in-season gate, and it is untouched.
+
+## The document may not weaken its own policy
+
+`WEEKLY_CANONICAL_INPUT_CLASS_RULES`, `WEEKLY_PROHIBITED_PRESEASON_INPUT_CLASSES`
+and `WEEKLY_SEASONAL_CANDIDATE_BOUNDARY` are frozen constants. A publication
+*declares* them, and the validator compares the declaration against the canonical
+value by digest. A document that shipped a relaxed rule set, an emptied
+prohibited list, or an alternate seasonal boundary is rejected
+(`policy_input_rules_altered`, `policy_prohibited_list_altered`,
+`policy_seasonal_boundary_altered`).
+
+Every class marked `required: true` must have a matching artifact input, or
+`required_input_class_missing` fires. Duplicate input ids, duplicate input
+classes, and rows referencing undeclared input ids are all rejected.
+
+## Nothing self-reported is taken as verification
+
+- `cutoff_evidence.self_reported_status` is named for what it is: a producer
+  claim. The validator performs its **own** comparison of each input's
+  `source_as_of` against `forecast_cutoff`. A post-cutoff source is rejected
+  even when the producer claims `eligible`.
+- `cutoff_evidence.record_level_verification` defaults to
+  `unverified_requires_source_bytes`. Claiming `locally_verified` without a
+  `WeeklyVerificationContext` vouching for that input is rejected
+  (`input_cutoff_unverified`).
+- Census membership cannot be proven by a reference plus a self-declared
+  `one_to_one_complete`. Without `context.census`, validation reports
+  `census_membership_unverified` and admission is refused.
+- `status_counts`, `identity_coverage`, and reconciliation are **recomputed from
+  the supplied rows** and compared by digest; a manifest that misreports them is
+  rejected.
+- An empty rows array can never satisfy a manifest claiming a non-empty census.
+
+## A schema example cannot become a real publication
+
+Relabelling `artifact_version` is not enough. A real publication must contain no
+example markers (`example://`, `-example`, `placeholder`, "not a real
+publication", …), no placeholder hashes (64 repeated characters), and no
+placeholder commit SHAs (40 zeroes). Those checks are skipped for documents that
+honestly declare themselves examples.
+
+## Row-level rules
+
+Available rows require a resolved canonical identity, a finite point forecast, a
+finite positive integer rank, and use of every required input. Ranks must be
+unique, contiguous `1..N`, and consistent with the documented ordering
+(`WEEKLY_RANK_ORDERING_RULE`: point forecast descending, ties broken by canonical
+player id ascending). Unavailable rows carry no rank or point forecast and at
+least one typed reason.
 
 ## Census reconciliation
 
@@ -158,7 +226,10 @@ weekly publication and is not an input to one.
 `canonicalForwardJson` / `canonicalForwardJsonSha256` (`tiber-canonical-json-v1`).
 
 - `digests.player_rows_sha256` — digest of the canonical rows artifact.
-- `digests.manifest_sha256` — digest of the manifest with the digest block excluded.
+- `weeklyManifestSha256(manifest)` — digest of the **whole** manifest. The
+  manifest deliberately carries no digest of itself; the previous
+  "manifest minus its digest block" arrangement was the source of the
+  self-referential inconsistency.
 
 The fixture builder reads no clock, no randomness, and no network; every
 timestamp is a declared constant. Repeated runs produce byte-identical output.
@@ -166,8 +237,8 @@ timestamp is a declared constant. Repeated runs produce byte-identical output.
 Current fixture digests:
 
 ```
-manifest_sha256    = 6f988119edb85b98d95320d83709d7bd6538176fdba37433a974b9fa424302af
-player_rows_sha256 = 4eff1672264a7f9ce728509e1d09c397904baceb5eb25ad4af3509c666486306
+manifest_sha256    = acb7ae8cfade9bb9de1128eaa0df55addc83a4a9986415d29c8d4933b442164f
+player_rows_sha256 = 198aaf3e7c0b4f31d0c92d2b76a7e18d814afab8c655181e9281b1cd578821dc
 ```
 
 ## Review summary — the shipped fixture
@@ -180,7 +251,7 @@ player_rows_sha256 = 4eff1672264a7f9ce728509e1d09c397904baceb5eb25ad4af3509c6664
 | coverage | 2 `forecast_available`, 1 `no_prior_season_history`, 1 `identity_unresolved` |
 | identity | 3 resolved / 1 unresolved (coverage 0.75); no fuzzy join, no synthetic namespace |
 | point/range | point-only; every range field null (`unavailable_not_calibrated`) |
-| lifecycle | `draft`, `not_eligible_pending_admission`, no admission record |
+| lifecycle | `draft`, `not_eligible_pending_admission`, admission requires a receipt |
 | cutoff | `2026-09-09T00:00:00Z`, distinct from `generated_at` `2026-09-09T12:00:00Z` |
 
 **Limitations, stated on the artifact itself:** schema example only — not a real
@@ -196,13 +267,21 @@ football claim.
 `tests/weeklyForecastPublication.test.ts` models the decision Fantasy has to
 make. The load-bearing property: **refusal never falls back to FORGE.**
 
+`admitWeeklyPublication()` accepts `unknown` for all three documents and never
+throws.
+
 | input | decision |
 |---|---|
+| malformed manifest / rows bytes | refuse — `manifest_malformed` / `rows_malformed` |
 | schema example | refuse — `schema_example_not_a_publication` |
 | unrecognised artifact | refuse — `unrecognised_artifact` |
-| contract-invalid | refuse — `contract_invalid` |
-| real but unadmitted | refuse — `not_consumer_eligible` |
-| real, valid, admitted | admit — `source: 'forecast_weekly_publication'` |
+| contract-invalid (incl. unverified census) | refuse — `contract_invalid` |
+| no / malformed receipt | refuse — `admission_receipt_missing_or_malformed` |
+| receipt for another publication | refuse — `receipt_publication_id_mismatch` |
+| receipt via the in-season path | refuse — `receipt_wrong_admission_path` |
+| receipt admitting a weakened gate | refuse — `receipt_weakened_in_season_gate` |
+| manifest or rows edited after issue | refuse — `receipt_manifest_digest_mismatch` / `receipt_rows_digest_mismatch` |
+| real, valid, receipt-bound | admit — `source: 'forecast_weekly_publication'` |
 
 Every refusal yields `source: null`. A test asserts the decision object never
 contains the string `forge` in any refusal path — an unavailable Forecast
