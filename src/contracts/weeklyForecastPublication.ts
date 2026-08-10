@@ -1910,7 +1910,12 @@ export function validateWeeklyPublication(
         if (expectedCanonical === undefined) {
           fail('identity_evidence_unbound', `${at}.identity.canonical_player_id`,
             `The verified census carries no record for "${row.population_row_id}".`);
-        } else if (declared !== null && declared !== expectedCanonical) {
+        } else if (declared !== expectedCanonical) {
+          // Exact equality, INCLUDING null. Exempting a null declaration let a
+          // publication downgrade a governed resolved player to
+          // identity_unresolved, null its canonical id, forecast and rank,
+          // recompute counts and digests, and still be admitted — selective
+          // suppression of a player the trusted census says is resolvable.
           fail('identity_evidence_unbound', `${at}.identity.canonical_player_id`,
             `Declared canonical id "${declared}" is not the identity the governed census ` +
             `assigns to record "${row.population_row_id}".`);

@@ -653,6 +653,24 @@ describe('adversarial: 16 — a canonical id must belong to the record it cites'
       .toContain('identity_evidence_unbound');
   });
 
+  it('refuses downgrading a governed resolved player to unresolved', () => {
+    // Selective suppression: the trusted census resolves this row, but the
+    // publication marks it identity_unresolved, nulls the canonical id,
+    // forecast and rank, and recomputes counts and digests.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const suppressed = clone(realRows) as any[];
+    suppressed[0].identity.canonical_player_id = null;
+    suppressed[0].identity.identity_status = 'unresolved';
+    suppressed[0].forecast_status = 'identity_unresolved';
+    suppressed[0].point_forecast = null;
+    suppressed[0].rank = null;
+    suppressed[0].status_reasons = ['canonical_identity_missing_in_governed_crosswalk'];
+    // Census evidence still carries the TRUE resolved mapping.
+    const context = censusContext(realRows, real);
+    expect(codes(validateWeeklyPublication(real, suppressed as any, context)))
+      .toContain('identity_evidence_unbound');
+  });
+
   it('refuses two population rows resolving to the same canonical player', () => {
     const { manifest: real, rows: realRows } = realisedManifest();
     const duplicated = clone(realRows) as any[];
