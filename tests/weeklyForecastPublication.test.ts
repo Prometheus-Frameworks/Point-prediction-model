@@ -692,6 +692,24 @@ describe('adversarial: 16 — a canonical id must belong to the record it cites'
     expect(result.source).toBeNull();
   });
 
+  it('refuses claiming identity_unresolved while keeping the resolved identity', () => {
+    // Third variant of the same suppression attack. The earlier fix bound
+    // canonical_player_id, so this keeps the CORRECT id and identity_status
+    // 'resolved' and instead flips forecast_status, clears the forecast and
+    // rank, renumbers the survivors and recomputes every summary and digest.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const suppressed = clone(realRows) as any[];
+    suppressed[0].forecast_status = 'identity_unresolved';
+    suppressed[0].point_forecast = null;
+    suppressed[0].rank = null;
+    suppressed[0].status_reasons = ['canonical_identity_missing_in_governed_crosswalk'];
+    // Identity itself is untouched and still correct.
+    suppressed[1].rank = 1;
+    const context = censusContext(realRows, real);
+    expect(codes(validateWeeklyPublication(real, suppressed as any, context)))
+      .toContain('identity_evidence_unbound');
+  });
+
   it('refuses downgrading a governed resolved player to unresolved', () => {
     // Selective suppression: the trusted census resolves this row, but the
     // publication marks it identity_unresolved, nulls the canonical id,

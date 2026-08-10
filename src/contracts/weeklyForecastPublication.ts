@@ -1864,6 +1864,28 @@ export function validateWeeklyPublication(
         fail('unavailable_row_missing_reason', `${at}.status_reasons`,
           'An unavailable row requires at least one typed reason.');
       }
+      // An unavailability REASON must be consistent with the verified identity
+      // state, not merely well-formed. Binding canonical_player_id closed the
+      // variant that nulled the id; a publisher can otherwise keep the correct
+      // non-null id and identity_status 'resolved', flip forecast_status to
+      // identity_unresolved, clear the forecast and rank, renumber the
+      // remaining ranks and recompute every summary, digest and receipt — and
+      // selectively omit a governed player while every other check passes.
+      const verifiedCanonical = context.census?.canonical_player_ids_by_row_id?.[row.population_row_id];
+      const claimsIdentityProblem =
+        row.forecast_status === 'identity_unresolved' ||
+        row.forecast_status === 'identity_conflicting';
+      if (claimsIdentityProblem && verifiedCanonical) {
+        fail('identity_evidence_unbound', `${at}.forecast_status`,
+          `Row "${row.population_row_id}" claims ${row.forecast_status}, but the verified ` +
+          `census resolves it to "${verifiedCanonical}". An unavailability reason must be ` +
+          'consistent with the verified identity state.');
+      }
+      if (claimsIdentityProblem && row.identity?.identity_status === 'resolved') {
+        fail('identity_evidence_unbound', `${at}.forecast_status`,
+          `Row "${row.population_row_id}" declares identity_status 'resolved' while claiming ` +
+          `${row.forecast_status}; those cannot both be true.`);
+      }
     }
 
     const identityRef = row.identity?.source_identity_ref;
