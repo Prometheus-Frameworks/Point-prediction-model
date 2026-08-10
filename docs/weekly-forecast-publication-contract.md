@@ -146,8 +146,21 @@ A receipt is honoured only when **all** of the following hold:
   receipt digest;
 - receipt authority and decision-ref identity exactly match the external pin;
 - `decision_ref.content_sha256` and `record_id` are non-null, and `decided_at`
-  is a canonical instant no earlier than manifest generation;
+  is a canonical instant no earlier than manifest generation **and no later
+  than `WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC`**;
 - no example marker or placeholder hash appears anywhere in the real receipt.
+
+`WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC` is `2026-09-10T20:00:00.000Z`. It is a
+policy boundary owned by this contract, not an ingested schedule; a real
+publication whose governed schedule disagrees must amend the constant
+deliberately rather than declare its own deadline.
+
+The upper bound matters as much as the lower one. `forecast_cutoff` and
+`generated_at` are the manifest's own self-declared timestamps, so capping only
+those caps nothing an author controls. The receipt is the first independently
+trusted binding of the manifest and row bytes; leaving its decision uncapped
+would let a document authored after Week 1 was played carry backdated manifest
+timestamps and still be admitted through the preseason path.
 
 Consequence: mutating any manifest field, row, score, or receipt breaks an
 unchanged trusted binding and the consumer refuses. Merely regenerating a

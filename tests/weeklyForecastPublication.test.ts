@@ -17,6 +17,7 @@ import {
   WEEKLY_DEFAULT_CONSUMER_ELIGIBILITY,
   WEEKLY_GOVERNED_CENSUS_OWNER,
   WEEKLY_PRESEASON_INPUT_CLASSES,
+  WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC,
   WEEKLY_PROHIBITED_PRESEASON_INPUT_CLASSES,
   WEEKLY_PUBLICATION_ARTIFACT_VERSION,
   WEEKLY_PUBLICATION_SCHEMA_EXAMPLE_VERSION,
@@ -591,6 +592,29 @@ describe('adversarial: 14 — identity evidence must be bound, not merely presen
       realRows[1].population_row_id;
     expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
       .toContain('identity_evidence_unbound');
+  });
+});
+
+describe('the published contract matches the validator', () => {
+  const contractDoc = readFileSync(
+    path.join(repoRoot, 'docs/weekly-forecast-publication-contract.md'),
+    'utf8',
+  );
+
+  it('documents the receipt pre-kickoff upper bound', () => {
+    // The doc states its receipt condition list is exhaustive. An omitted rule
+    // there is not cosmetic: an independent implementation reading only the
+    // contract would recreate the post-kickoff admission flaw.
+    expect(contractDoc).toContain('WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC');
+    const receiptSection = contractDoc.slice(
+      contractDoc.indexOf('A receipt is honoured only when'),
+      contractDoc.indexOf('Consequence: mutating any manifest field'),
+    );
+    expect(receiptSection).toMatch(/no later\s+than `WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC`/);
+  });
+
+  it('publishes the deadline the validator actually enforces', () => {
+    expect(contractDoc).toContain(WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC);
   });
 });
 
