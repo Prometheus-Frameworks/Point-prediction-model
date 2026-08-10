@@ -81,6 +81,9 @@ function censusContext(
       record_count_eligible: input.cutoff_evidence.record_count_eligible,
       record_count_post_cutoff: input.cutoff_evidence.record_count_post_cutoff,
       record_count_unresolved: input.cutoff_evidence.record_count_unresolved,
+      // Consumer-derived membership: which population rows this input actually
+      // holds an eligible record for.
+      eligible_population_row_ids: rowSet.map((r) => r.population_row_id),
       verification_artifact_ref: {
         artifact_type: 'weekly_input_cutoff_verification',
         artifact_version: 'weekly-input-cutoff-verification-v1',
@@ -690,6 +693,37 @@ describe('adversarial: 16 — a canonical id must belong to the record it cites'
     );
     expect(result.admit).toBe(false);
     expect(result.source).toBeNull();
+  });
+
+  it('refuses an available row the verified input holds no record for', () => {
+    // The reproduction: a required input verified with ONE eligible record,
+    // while two available rows each self-declare that they used it. Every count
+    // is internally consistent and the digests and receipt recompute cleanly —
+    // but the verified source says nothing about the second player.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const evidence = context.record_level_input_evidence!.map((e) =>
+      e.input_id === 'tiber-data-prior-season-outcomes-2025'
+        ? { ...e, eligible_population_row_ids: [realRows[0].population_row_id], record_count_eligible: 1 }
+        : e,
+    );
+    const result = validateWeeklyPublication(
+      real, realRows, { ...context, record_level_input_evidence: evidence },
+    );
+    expect(codes(result)).toContain('available_row_missing_required_input');
+  });
+
+  it('refuses input evidence whose membership contradicts its own count', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const evidence = context.record_level_input_evidence!.map((e) =>
+      e.input_id === 'tiber-data-prior-season-outcomes-2025'
+        ? { ...e, record_count_eligible: 99 }
+        : e,
+    );
+    expect(codes(validateWeeklyPublication(
+      real, realRows, { ...context, record_level_input_evidence: evidence },
+    ))).toContain('input_verification_binding_mismatch');
   });
 
   it('refuses claiming identity_unresolved while keeping the resolved identity', () => {

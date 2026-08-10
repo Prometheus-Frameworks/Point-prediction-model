@@ -1241,6 +1241,16 @@ export interface WeeklyRecordLevelInputEvidence {
   record_count_eligible: number;
   record_count_post_cutoff: number;
   record_count_unresolved: number;
+  /**
+   * The population rows this input actually holds an eligible record for,
+   * derived by the consumer from the exact source bytes.
+   *
+   * Aggregate counts cannot answer a per-player question. Without this, an
+   * input carrying one eligible record satisfies every count check while two
+   * available rows each self-declare that they used it — and rankings are
+   * produced for players the verified source says nothing about.
+   */
+  eligible_population_row_ids: readonly string[];
   verification_artifact_ref: WeeklyContentRef;
 }
 
@@ -1609,6 +1619,20 @@ export function validateWeeklyPublication(
       fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
         `Verification evidence references undeclared input "${evidence.input_id}".`);
     }
+    // The membership list is the evidence; the count is a summary of it. If
+    // they disagree, one of them is fabricated.
+    const members = evidence.eligible_population_row_ids ?? [];
+    if (!Array.isArray(evidence.eligible_population_row_ids)) {
+      fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
+        `Input "${evidence.input_id}" verification carries no eligible population-row membership.`);
+    } else if (new Set(members).size !== members.length) {
+      fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
+        `Input "${evidence.input_id}" lists a population row more than once as eligible.`);
+    } else if (members.length !== evidence.record_count_eligible) {
+      fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
+        `Input "${evidence.input_id}" reports ${evidence.record_count_eligible} eligible records ` +
+        `but verified membership for ${members.length}.`);
+    }
   }
 
   // Required classes must actually be present as inputs.
@@ -1854,6 +1878,25 @@ export function validateWeeklyPublication(
         if (!(available.input_ids_used ?? []).includes(requiredId)) {
           fail('available_row_missing_required_input', `${at}.input_ids_used`,
             `An available forecast must use required input "${requiredId}".`);
+          continue;
+        }
+        // `input_ids_used` is the publisher's own claim. Verify the row is a
+        // member of that input according to the consumer's exact-byte
+        // verification, rather than trusting the string it listed.
+        // Only meaningful where the document claims local verification. An
+        // example that truthfully declares `unverified_requires_source_bytes`
+        // is already non-admissible on that ground; demanding membership
+        // evidence it never claimed would be a category error.
+        const declaredInput = inputs.find((i) => i.input_id === requiredId);
+        if (declaredInput?.cutoff_evidence?.record_level_verification !== 'locally_verified') continue;
+        const evidence = verificationByInputId.get(requiredId);
+        if (!evidence) {
+          fail('available_row_missing_required_input', `${at}.input_ids_used`,
+            `Required input "${requiredId}" claims local verification but supplies no evidence.`);
+        } else if (!(evidence.eligible_population_row_ids ?? []).includes(row.population_row_id)) {
+          fail('available_row_missing_required_input', `${at}.input_ids_used`,
+            `Required input "${requiredId}" holds no verified eligible record for ` +
+            `population row "${row.population_row_id}".`);
         }
       }
     } else {
