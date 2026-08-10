@@ -674,6 +674,7 @@ export type WeeklyValidationErrorCode =
   | 'actual_outcome_present_before_target_week'
   | 'rank_on_unavailable_row'
   | 'unavailable_row_missing_reason'
+  | 'unavailability_reason_contradicted'
   | 'manifest_lifecycle_claims_eligibility'
   | 'manifest_identity_invalid'
   | 'scoring_profile_mismatch'
@@ -1805,6 +1806,31 @@ export function validateWeeklyPublication(
   );
   const availableRows: WeeklyAvailablePlayerRow[] = [];
 
+  // Verified per-input membership, derived by the consumer from the exact
+  // source bytes. An input that does not claim local verification — or claims
+  // it and supplies no evidence — has no verified membership here and
+  // therefore cannot contradict anything a row declares. Absence of evidence
+  // must stay silent; only present evidence gets to overrule a claim.
+  const verifiedMembersByInputId = new Map<string, ReadonlySet<string>>();
+  for (const input of inputs) {
+    if (input.cutoff_evidence?.record_level_verification !== 'locally_verified') continue;
+    const evidence = verificationByInputId.get(input.input_id);
+    if (!evidence || !Array.isArray(evidence.eligible_population_row_ids)) continue;
+    verifiedMembersByInputId.set(input.input_id, new Set(evidence.eligible_population_row_ids));
+  }
+  /** Inputs of a class whose verified membership holds an eligible record for `rowId`. */
+  const verifiedInputsHolding = (
+    rowId: string,
+    ...classes: readonly WeeklyPreseasonInputClass[]
+  ): string[] =>
+    inputs
+      .filter((i) => classes.includes(i.input_class))
+      .filter((i) => verifiedMembersByInputId.get(i.input_id)?.has(rowId))
+      .map((i) => i.input_id);
+  const verifiedCensusIds = context.census
+    ? new Set(context.census.population_row_ids)
+    : null;
+
   rows.forEach((row, index) => {
     const at = `rows[${index}]`;
     if (!['resolved', 'unresolved', 'conflicting'].includes(row.identity?.identity_status)) {
@@ -1928,6 +1954,72 @@ export function validateWeeklyPublication(
         fail('identity_evidence_unbound', `${at}.forecast_status`,
           `Row "${row.population_row_id}" declares identity_status 'resolved' while claiming ` +
           `${row.forecast_status}; those cannot both be true.`);
+      }
+
+      // The same selective-suppression vector, one status further along.
+      // Binding the identity reasons above closed only the reasons that talk
+      // about identity. A publisher can otherwise leave identity entirely
+      // correct and instead claim the row's *inputs* are missing, or that it
+      // has no prior season, or that its roster state is unknown — clearing
+      // the forecast and rank, renumbering the survivors, and recomputing
+      // every summary, digest, receipt and trusted binding — while the
+      // verified evidence for those very inputs holds an eligible record for
+      // the row. Every unavailability reason is a claim *about evidence*, so
+      // each one must lose to the evidence wherever the evidence exists.
+      const contradicts = (holders: readonly string[], claim: string) => {
+        if (holders.length === 0) return;
+        fail('unavailability_reason_contradicted', `${at}.forecast_status`,
+          `Row "${row.population_row_id}" claims ${row.forecast_status}, but ${claim} ` +
+          `(verified input${holders.length === 1 ? '' : 's'} ${holders.map((h) => `"${h}"`).join(', ')}). ` +
+          'An unavailability reason must be consistent with the verified evidence.');
+      };
+
+      if (row.forecast_status === 'unavailable_missing_required_inputs') {
+        const requiredIds = [...requiredInputIds];
+        // Decidable only when *every* required input carries verified
+        // membership: an unverified required input could genuinely be the
+        // missing one, which would make the row's claim true.
+        const allVerified =
+          requiredIds.length > 0 && requiredIds.every((id) => verifiedMembersByInputId.has(id));
+        if (allVerified && requiredIds.every((id) => verifiedMembersByInputId.get(id)!.has(row.population_row_id))) {
+          contradicts(requiredIds, 'every required input holds a verified eligible record for it');
+        }
+      }
+
+      if (row.forecast_status === 'no_prior_season_history') {
+        contradicts(
+          verifiedInputsHolding(
+            row.population_row_id,
+            'prior_season_realized_outcomes',
+            'prior_season_usage_and_role',
+          ),
+          'the verified prior-season inputs hold an eligible record for it',
+        );
+      }
+
+      if (row.forecast_status === 'roster_state_unresolved') {
+        contradicts(
+          verifiedInputsHolding(row.population_row_id, 'roster_and_team_assignment_state'),
+          'the verified roster/team-assignment input holds an eligible record for it',
+        );
+      }
+
+      // These two need no input evidence — they contradict material the
+      // validator has already verified or the row itself declares.
+      if (row.forecast_status === 'population_ineligible' && verifiedCensusIds?.has(row.population_row_id)) {
+        fail('unavailability_reason_contradicted', `${at}.forecast_status`,
+          `Row "${row.population_row_id}" claims population_ineligible while being a member of ` +
+          'the verified governed census population. An unavailability reason must be consistent ' +
+          'with the verified evidence.');
+      }
+      if (
+        row.forecast_status === 'unsupported_position_domain' &&
+        (WEEKLY_SUPPORTED_POSITIONS as readonly string[]).includes(row.identity?.position ?? '')
+      ) {
+        fail('unavailability_reason_contradicted', `${at}.forecast_status`,
+          `Row "${row.population_row_id}" claims unsupported_position_domain while declaring the ` +
+          `supported position "${row.identity?.position}". Note that position is publisher-declared: ` +
+          'this catches the self-contradiction, not a false position.');
       }
     }
 

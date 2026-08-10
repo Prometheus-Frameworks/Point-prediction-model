@@ -18,6 +18,7 @@ import {
   WEEKLY_GOVERNED_CENSUS_OWNER,
   WEEKLY_PRESEASON_INPUT_CLASSES,
   WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC,
+  WEEKLY_FORECAST_STATUSES,
   WEEKLY_PROHIBITED_PRESEASON_INPUT_CLASSES,
   WEEKLY_PUBLICATION_ARTIFACT_VERSION,
   WEEKLY_PUBLICATION_SCHEMA_EXAMPLE_VERSION,
@@ -64,6 +65,31 @@ const REAL_VERIFICATION_SHA = '3'.repeat(63) + '4';
  * swaps the example census digest for a real one, so a context pinned to the
  * example digest would (correctly) fail membership verification.
  */
+/**
+ * Which population rows an input of this class actually holds an eligible
+ * record for, as a consumer deriving membership from the source bytes would
+ * find it.
+ *
+ * This is not a formality. A row declaring `no_prior_season_history` is
+ * asserting that the prior-season inputs have nothing for it; a context that
+ * simultaneously lists it as an eligible member of those inputs is describing
+ * a world that cannot exist, and the validator now rejects exactly that
+ * combination. Modelling the honest world here keeps the harness from
+ * encoding the contradiction it is supposed to detect.
+ */
+function inputHoldsRecordFor(inputClass: string, row: WeeklyPlayerRow): boolean {
+  if (row.forecast_status === 'no_prior_season_history') {
+    return inputClass !== 'prior_season_realized_outcomes' &&
+      inputClass !== 'prior_season_usage_and_role';
+  }
+  return true;
+}
+
+/** The honest eligible-membership list for one input class over a row set. */
+function eligibleRowIdsFor(inputClass: string, rowSet: readonly WeeklyPlayerRow[]): string[] {
+  return rowSet.filter((r) => inputHoldsRecordFor(inputClass, r)).map((r) => r.population_row_id);
+}
+
 function censusContext(
   rowSet: readonly WeeklyPlayerRow[] = rows,
   forManifest: WeeklyForecastPublicationManifest = manifest,
@@ -78,12 +104,12 @@ function censusContext(
       verified_forecast_cutoff: forManifest.forecast_cutoff,
       verified_source_as_of: input.source_as_of!,
       max_record_effective_at: input.source_as_of!,
-      record_count_eligible: input.cutoff_evidence.record_count_eligible,
+      record_count_eligible: eligibleRowIdsFor(input.input_class, rowSet).length,
       record_count_post_cutoff: input.cutoff_evidence.record_count_post_cutoff,
       record_count_unresolved: input.cutoff_evidence.record_count_unresolved,
       // Consumer-derived membership: which population rows this input actually
       // holds an eligible record for.
-      eligible_population_row_ids: rowSet.map((r) => r.population_row_id),
+      eligible_population_row_ids: eligibleRowIdsFor(input.input_class, rowSet),
       verification_artifact_ref: {
         artifact_type: 'weekly_input_cutoff_verification',
         artifact_version: 'weekly-input-cutoff-verification-v1',
@@ -167,6 +193,9 @@ function realisedManifest(rowSet: readonly WeeklyPlayerRow[] = rows) {
     uri_or_path: `tiber-data://${input.input_class}`,
     cutoff_evidence: {
       ...input.cutoff_evidence,
+      // A `locally_verified` input must declare the count the verification
+      // evidence will actually carry; the two are bound.
+      record_count_eligible: eligibleRowIdsFor(input.input_class, rowSet).length,
       record_level_verification: 'locally_verified',
     },
     limitations: [],
@@ -618,6 +647,34 @@ describe('the published contract matches the validator', () => {
 
   it('publishes the deadline the validator actually enforces', () => {
     expect(contractDoc).toContain(WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC);
+  });
+
+  it('documents every unavailability reason the validator binds', () => {
+    // An independent implementation reading only the contract must not be able
+    // to recreate the selective-suppression path. Each bound reason has to be
+    // named in the doc, not just in the code.
+    const section = contractDoc.slice(
+      contractDoc.indexOf('### An unavailability reason loses to the evidence'),
+      contractDoc.indexOf('## Census reconciliation'),
+    );
+    expect(section.length).toBeGreaterThan(0);
+    for (const reason of [
+      'identity_unresolved',
+      'identity_conflicting',
+      'unavailable_missing_required_inputs',
+      'no_prior_season_history',
+      'roster_state_unresolved',
+      'population_ineligible',
+      'unsupported_position_domain',
+    ]) {
+      expect(section).toContain(reason);
+    }
+    // Every non-available status is accounted for; a new one added to the enum
+    // without a documented binding fails here.
+    for (const status of WEEKLY_FORECAST_STATUSES) {
+      if (status === 'forecast_available') continue;
+      expect(section).toContain(status);
+    }
   });
 });
 
@@ -1192,5 +1249,175 @@ describe('determinism', () => {
   it('keeps the prohibited-class list non-empty and canonical', () => {
     expect(WEEKLY_PROHIBITED_PRESEASON_INPUT_CLASSES.length).toBeGreaterThan(0);
     expect(manifest.prohibited_input_classes).toEqual(WEEKLY_PROHIBITED_PRESEASON_INPUT_CLASSES);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 17 — an unavailability REASON is a claim about evidence, and loses to it
+// ---------------------------------------------------------------------------
+
+/**
+ * The full selective-suppression attack, parameterised by the reason given.
+ *
+ * Row 0 keeps its correct identity and its true census record. Only its
+ * `forecast_status` flips: forecast and rank cleared, a typed reason attached,
+ * the survivors renumbered, and the status counts, row digest and output
+ * binding all recomputed. Nothing is left internally inconsistent — which is
+ * precisely why the reason itself has to be checked against the evidence.
+ */
+function suppressRowAs(
+  real: WeeklyForecastPublicationManifest,
+  realRows: readonly WeeklyPlayerRow[],
+  index: number,
+  status: string,
+  reason: string,
+) {
+  const next = clone(real) as any;
+  const nextRows = clone(realRows as WeeklyPlayerRow[]) as any[];
+  const victim = nextRows[index];
+  const wasAvailable = victim.forecast_status === 'forecast_available';
+  victim.forecast_status = status;
+  victim.rank = null;
+  victim.point_forecast = null;
+  victim.status_reasons = [reason];
+  let rank = 1;
+  for (const row of nextRows) {
+    if (row.forecast_status === 'forecast_available') row.rank = rank++;
+  }
+  next.status_counts = { ...next.status_counts };
+  if (wasAvailable) next.status_counts.forecast_available -= 1;
+  next.status_counts[status] += 1;
+  next.digests.player_rows_sha256 = canonicalForwardJsonSha256(nextRows);
+  next.outputs[0].content_sha256 = next.digests.player_rows_sha256;
+  return { manifest: next as WeeklyForecastPublicationManifest, rows: nextRows as WeeklyPlayerRow[] };
+}
+
+describe('adversarial: 17 — an unavailability reason must lose to the verified evidence', () => {
+  it('refuses "missing required inputs" when every verified input holds the row', () => {
+    // The reported bypass. The membership check added for available rows only
+    // guards the `forecast_available` branch, so a publisher escapes it simply
+    // by declaring the row unavailable instead — suppressing a governed player
+    // whose inputs are all verified present.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'unavailable_missing_required_inputs',
+      'required_input_holds_no_record_for_population_row',
+    );
+    const result = validateWeeklyPublication(
+      attack.manifest, attack.rows, censusContext(realRows, real),
+    );
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('unavailability_reason_contradicted');
+  });
+
+  it('refuses "no prior season history" when a verified prior-season input holds the row', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'no_prior_season_history',
+      'no_prior_season_realized_outcomes_for_population_row',
+    );
+    expect(codes(validateWeeklyPublication(
+      attack.manifest, attack.rows, censusContext(realRows, real),
+    ))).toContain('unavailability_reason_contradicted');
+  });
+
+  it('refuses "roster state unresolved" when the verified roster input holds the row', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'roster_state_unresolved',
+      'roster_state_unknown_for_population_row',
+    );
+    expect(codes(validateWeeklyPublication(
+      attack.manifest, attack.rows, censusContext(realRows, real),
+    ))).toContain('unavailability_reason_contradicted');
+  });
+
+  it('refuses "population ineligible" for a member of the verified governed census', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'population_ineligible',
+      'population_row_outside_bounded_scope',
+    );
+    expect(codes(validateWeeklyPublication(
+      attack.manifest, attack.rows, censusContext(realRows, real),
+    ))).toContain('unavailability_reason_contradicted');
+  });
+
+  it('refuses "unsupported position domain" for a row declaring a supported position', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'unsupported_position_domain',
+      'position_outside_supported_offensive_domain',
+    );
+    expect(codes(validateWeeklyPublication(
+      attack.manifest, attack.rows, censusContext(realRows, real),
+    ))).toContain('unavailability_reason_contradicted');
+  });
+
+  it('still accepts an unavailability reason the evidence supports', () => {
+    // The guard must not turn every unavailable row into an error. The fixture
+    // row that truthfully claims no prior season is absent from the verified
+    // prior-season memberships, and stays admissible.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const truthful = realRows.find((r) => r.forecast_status === 'no_prior_season_history');
+    expect(truthful).toBeDefined();
+    const context = censusContext(realRows, real);
+    for (const evidence of context.record_level_input_evidence!) {
+      const input = real.artifact_inputs.find((i) => i.input_id === evidence.input_id)!;
+      if (
+        input.input_class === 'prior_season_realized_outcomes' ||
+        input.input_class === 'prior_season_usage_and_role'
+      ) {
+        expect(evidence.eligible_population_row_ids).not.toContain(truthful!.population_row_id);
+      }
+    }
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .not.toContain('unavailability_reason_contradicted');
+  });
+
+  it('stays silent where the evidence is absent rather than guessing', () => {
+    // Absence of evidence is not evidence of contradiction. With no verified
+    // membership for the required inputs, the publisher's claim is undecidable
+    // and must not be rejected on suspicion.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'unavailable_missing_required_inputs',
+      'required_input_holds_no_record_for_population_row',
+    );
+    const context = censusContext(realRows, real);
+    const result = validateWeeklyPublication(attack.manifest, attack.rows, {
+      ...context,
+      record_level_input_evidence: [],
+    });
+    expect(codes(result)).not.toContain('unavailability_reason_contradicted');
+    // It is still inadmissible — on the unverified-input ground, which is the
+    // honest reason.
+    expect(codes(result)).toContain('input_cutoff_unverified');
+  });
+
+  it('does not let a partially verified required set decide the claim', () => {
+    // One required input unverified means it could genuinely be the missing
+    // one. The check must abstain rather than reject on the other two.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'unavailable_missing_required_inputs',
+      'required_input_holds_no_record_for_population_row',
+    );
+    const context = censusContext(realRows, real);
+    const partial = clone(attack.manifest) as any;
+    partial.artifact_inputs = partial.artifact_inputs.map((i: any) =>
+      i.input_class === 'roster_and_team_assignment_state'
+        ? { ...i, cutoff_evidence: { ...i.cutoff_evidence, record_level_verification: 'unverified_requires_source_bytes' } }
+        : i,
+    );
+    expect(codes(validateWeeklyPublication(partial, attack.rows, context)))
+      .not.toContain('unavailability_reason_contradicted');
   });
 });

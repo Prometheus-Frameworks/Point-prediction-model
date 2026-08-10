@@ -235,6 +235,43 @@ unique, contiguous `1..N`, and consistent with the documented ordering
 player id ascending). Unavailable rows carry no rank or point forecast and at
 least one typed reason.
 
+### An unavailability reason loses to the evidence
+
+A typed reason is not merely a well-formed string: it is a **claim about the
+evidence**, and the validator checks it against the evidence rather than
+accepting it.
+
+Without this, marking a row unavailable is a way to delete a governed player.
+The publisher clears the forecast and rank, attaches a plausible reason,
+renumbers the survivors, and recomputes every status count, digest, receipt and
+trusted binding. The document is then completely self-consistent — and one
+player the governed census requires has been silently removed from the
+rankings. Every structural check passes, because nothing structural is wrong.
+
+So each reason is bound to whatever independently verifies it:
+
+| Reason | Rejected when |
+| --- | --- |
+| `identity_unresolved`, `identity_conflicting` | the verified census resolves the row to a canonical id, or the row itself declares `identity_status: 'resolved'` |
+| `unavailable_missing_required_inputs` | every required input carries verified membership **and** all of them hold an eligible record for the row |
+| `no_prior_season_history` | a verified `prior_season_realized_outcomes` or `prior_season_usage_and_role` input holds an eligible record for the row |
+| `roster_state_unresolved` | the verified `roster_and_team_assignment_state` input holds an eligible record for the row |
+| `population_ineligible` | the row is a member of the verified governed census population |
+| `unsupported_position_domain` | the row declares a supported offensive position |
+
+Two limits are deliberate. **Absence of evidence stays silent**: where an input
+does not claim `locally_verified`, or claims it and supplies no membership, the
+row's claim is undecidable and is not rejected on suspicion — such a document is
+already inadmissible on the unverified-input ground, which is the honest reason.
+And for `unavailable_missing_required_inputs` the check abstains unless *every*
+required input is verified, because an unverified one could genuinely be the
+missing one.
+
+The `unsupported_position_domain` row is the weakest of the six: position is
+publisher-declared and not census-bound, so the check catches the
+self-contradiction rather than a false position. Binding position to the
+governed census is an open follow-up.
+
 ## Census reconciliation
 
 Every census row maps to exactly one output row **or** a typed unavailable
