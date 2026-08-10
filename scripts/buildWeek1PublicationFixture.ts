@@ -468,12 +468,21 @@ function exampleCensusContext(
   forManifest: WeeklyForecastPublicationManifest,
 ): WeeklyVerificationContext {
   return {
+    expected_census_identity: {
+      owner_repository: WEEKLY_GOVERNED_CENSUS_OWNER,
+      semantics_ref: forManifest.population_census.semantics_ref,
+      source_uri_or_path: forManifest.population_census.census_artifact_ref.uri_or_path,
+      census_sha256: PLACEHOLDER_SHA,
+    },
     census: {
       census_sha256: PLACEHOLDER_SHA,
       population_row_ids: EXAMPLE_ROWS.map((row) => row.population_row_id),
       owner_repository: WEEKLY_GOVERNED_CENSUS_OWNER,
       semantics_ref: forManifest.population_census.semantics_ref,
       source_uri_or_path: forManifest.population_census.census_artifact_ref.uri_or_path,
+      canonical_player_ids_by_row_id: Object.fromEntries(
+        EXAMPLE_ROWS.map((row) => [row.population_row_id, row.identity?.canonical_player_id ?? null]),
+      ),
     },
   };
 }

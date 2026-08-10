@@ -1180,16 +1180,33 @@ export function parseWeeklyAdmissionReceipt(
  */
 export interface WeeklyVerificationContext {
   /**
-   * Consumer-owned census evidence. Like `admission_authority`, this must come
-   * from the consumer's own resolution of the governed TIBER-Data census — not
-   * from the publisher supplying the manifest.
+   * The census the consumer **expects**, independent of the document.
    *
-   * The digest and row ids alone only prove the manifest is internally
-   * consistent: a publisher holding both sides could select an arbitrary
-   * population, hash it, echo it here, and pass admission while silently
-   * omitting legitimate players. `owner_repository` and `semantics_ref` are
-   * therefore pinned against the governed owner so the population's provenance
-   * is asserted independently of the document being tested.
+   * Pinning the owner string and then checking that the semantics ref, source
+   * path, digest and population agree with values the manifest selected proves
+   * only internal consistency: a publisher holding both sides can name
+   * TIBER-Data while choosing an arbitrary semantics ref, source path, digest
+   * and population, echo them through the context, and pass. Equality with
+   * publisher-selected values is not provenance.
+   *
+   * This is the trust anchor, exactly as `admission_authority` is for receipts:
+   * it must come from deployed configuration or a separately governed artifact,
+   * never from the publication being tested. Admission fails closed without it.
+   */
+  expected_census_identity?: {
+    owner_repository: string;
+    semantics_ref: string;
+    source_uri_or_path: string;
+    census_sha256: string;
+  };
+  /**
+   * The census the consumer actually loaded and verified, including the
+   * canonical identity each population row maps to.
+   *
+   * `population_row_ids` alone cannot show that a row's `canonical_player_id`
+   * belongs to the census record it cites: swapping one row's canonical id for
+   * another's while keeping its own valid record id and digest satisfies every
+   * per-field check. The mapping is therefore carried here and compared.
    */
   census?: {
     census_sha256: string;
@@ -1197,6 +1214,8 @@ export interface WeeklyVerificationContext {
     owner_repository: string;
     semantics_ref: string;
     source_uri_or_path: string;
+    /** population_row_id → the canonical player id the governed census assigns. */
+    canonical_player_ids_by_row_id?: Readonly<Record<string, string | null>>;
   };
   /**
    * Verification results produced from the exact source bytes. An input id by
@@ -1690,28 +1709,52 @@ export function validateWeeklyPublication(
     fail('census_membership_unverified', 'population_census',
       'Census membership cannot be verified from a reference alone; supply verified census evidence.');
   } else {
-    // Provenance first. Digest equality below only proves the manifest agrees
-    // with the context; it says nothing about where that population came from.
-    // The consumer-owned context must independently name the governed owner and
-    // a real semantics reference, and the manifest must agree with it — so an
-    // arbitrary self-selected population cannot pass by being internally tidy.
-    const censusOwnerGoverned =
-      context.census.owner_repository === WEEKLY_GOVERNED_CENSUS_OWNER &&
-      manifest.population_census.semantics_owner === WEEKLY_GOVERNED_CENSUS_OWNER;
-    const semanticsPinned =
-      typeof context.census.semantics_ref === 'string' &&
-      context.census.semantics_ref.trim().length > 0 &&
-      context.census.semantics_ref === manifest.population_census.semantics_ref;
-    const sourcePinned =
-      typeof context.census.source_uri_or_path === 'string' &&
-      context.census.source_uri_or_path.trim().length > 0 &&
-      context.census.source_uri_or_path ===
-        manifest.population_census.census_artifact_ref?.uri_or_path;
-    if (!censusOwnerGoverned || !semanticsPinned || !sourcePinned) {
+    // Provenance first, against the CONSUMER'S expected identity.
+    //
+    // Comparing the context to the manifest only proves the two agree; a
+    // publisher controlling both can make them agree on anything. The expected
+    // identity is the trust anchor, so it is required, and both the manifest
+    // and the loaded census must match it.
+    const expected = context.expected_census_identity;
+    if (!expected) {
       fail('census_provenance_ungoverned', 'population_census',
-        `Census must be pinned to the governed owner (${WEEKLY_GOVERNED_CENSUS_OWNER}) ` +
-        'with a matching semantics reference and source path in the verification context.');
+        'Admission requires a consumer-owned expected census identity (governed owner, ' +
+        'semantics reference, source path and digest). Agreement between the manifest and ' +
+        'a caller-supplied context is not provenance.');
+    } else {
+      const matchesExpected = (actual: {
+        owner_repository?: string; semantics_ref?: string;
+        source_uri_or_path?: string; census_sha256?: string;
+      }) =>
+        actual.owner_repository === expected.owner_repository &&
+        actual.semantics_ref === expected.semantics_ref &&
+        actual.source_uri_or_path === expected.source_uri_or_path &&
+        actual.census_sha256 === expected.census_sha256;
+
+      if (expected.owner_repository !== WEEKLY_GOVERNED_CENSUS_OWNER) {
+        fail('census_provenance_ungoverned', 'population_census',
+          `The expected census identity must name the governed owner (${WEEKLY_GOVERNED_CENSUS_OWNER}).`);
+      }
+      if (!matchesExpected({
+        owner_repository: context.census.owner_repository,
+        semantics_ref: context.census.semantics_ref,
+        source_uri_or_path: context.census.source_uri_or_path,
+        census_sha256: context.census.census_sha256,
+      })) {
+        fail('census_provenance_ungoverned', 'population_census',
+          'The loaded census does not match the consumer-owned expected census identity.');
+      }
+      if (!matchesExpected({
+        owner_repository: manifest.population_census.semantics_owner,
+        semantics_ref: manifest.population_census.semantics_ref,
+        source_uri_or_path: manifest.population_census.census_artifact_ref?.uri_or_path,
+        census_sha256: manifest.population_census.census_sha256,
+      })) {
+        fail('census_provenance_ungoverned', 'population_census',
+          'The manifest does not reference the consumer-owned expected census identity.');
+      }
     }
+
     if (context.census.census_sha256 !== manifest.population_census.census_sha256) {
       fail('census_membership_mismatch', 'population_census.census_sha256',
         'Verification context census digest does not match the manifest.');
@@ -1852,8 +1895,46 @@ export function validateWeeklyPublication(
           `Row identity evidence must reference this row's census record ` +
           `("${row.population_row_id}"), not "${identityRef.record_id}".`);
       }
+      // Citing a valid record is not the same as belonging to it. Swapping one
+      // row's canonical id for another's, while keeping its own record id and
+      // digest, satisfies every per-field check above — and produces forecasts
+      // attributed to the wrong player. Bind the id to the verified census
+      // record's contents.
+      const censusIdentities = context.census?.canonical_player_ids_by_row_id;
+      if (!censusIdentities) {
+        fail('identity_evidence_unbound', `${at}.identity.canonical_player_id`,
+          'Verified census record identities are required to bind canonical player ids.');
+      } else {
+        const expectedCanonical = censusIdentities[row.population_row_id];
+        const declared = row.identity?.canonical_player_id ?? null;
+        if (expectedCanonical === undefined) {
+          fail('identity_evidence_unbound', `${at}.identity.canonical_player_id`,
+            `The verified census carries no record for "${row.population_row_id}".`);
+        } else if (declared !== null && declared !== expectedCanonical) {
+          fail('identity_evidence_unbound', `${at}.identity.canonical_player_id`,
+            `Declared canonical id "${declared}" is not the identity the governed census ` +
+            `assigns to record "${row.population_row_id}".`);
+        }
+      }
     }
   });
+
+  // One-to-one identity: two population rows may not resolve to the same
+  // canonical player, or a forecast for one player is published twice under
+  // different census records.
+  const canonicalSeen = new Map<string, string>();
+  for (const row of rows) {
+    const canonical = row.identity?.canonical_player_id;
+    if (!canonical) continue;
+    const previous = canonicalSeen.get(canonical);
+    if (previous !== undefined) {
+      fail('identity_evidence_unbound', 'rows',
+        `Canonical player id "${canonical}" is claimed by both "${previous}" and ` +
+        `"${row.population_row_id}"; census identity must be one-to-one.`);
+    } else {
+      canonicalSeen.set(canonical, row.population_row_id);
+    }
+  }
 
   const availableUncertaintyStatuses = new Set(
     availableRows.map((row) => row.uncertainty.status),

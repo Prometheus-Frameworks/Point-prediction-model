@@ -92,14 +92,24 @@ function censusContext(
     }),
   );
   return {
-    census: {
-      census_sha256: forManifest.population_census.census_sha256,
-      population_row_ids: rowSet.map((r) => r.population_row_id),
-      // Consumer-owned provenance pin: the governed owner, the semantics
-      // reference and the source path the consumer resolved independently.
+    // The consumer's own pin, from deployed configuration rather than the
+    // document under test. The fixtures reuse the governed values because the
+    // fixture IS the governed census in these tests.
+    expected_census_identity: {
       owner_repository: WEEKLY_GOVERNED_CENSUS_OWNER,
       semantics_ref: forManifest.population_census.semantics_ref,
       source_uri_or_path: forManifest.population_census.census_artifact_ref.uri_or_path,
+      census_sha256: forManifest.population_census.census_sha256,
+    },
+    census: {
+      census_sha256: forManifest.population_census.census_sha256,
+      population_row_ids: rowSet.map((r) => r.population_row_id),
+      owner_repository: WEEKLY_GOVERNED_CENSUS_OWNER,
+      semantics_ref: forManifest.population_census.semantics_ref,
+      source_uri_or_path: forManifest.population_census.census_artifact_ref.uri_or_path,
+      canonical_player_ids_by_row_id: Object.fromEntries(
+        rowSet.map((r) => [r.population_row_id, r.identity?.canonical_player_id ?? null]),
+      ),
     },
     record_level_input_evidence: recordLevelEvidence,
     admission_authority: receipt ? trustedBindingFor(receipt) : undefined,
@@ -580,6 +590,75 @@ describe('adversarial: 14 — identity evidence must be bound, not merely presen
     (realRows[0] as any).identity.source_identity_ref.record_id =
       realRows[1].population_row_id;
     expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .toContain('identity_evidence_unbound');
+  });
+});
+
+describe('adversarial: 15 — the census must be pinned, not merely agreed upon', () => {
+  it('refuses admission with no consumer-owned expected census identity', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    delete (context as any).expected_census_identity;
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .toContain('census_provenance_ungoverned');
+  });
+
+  it('refuses a self-consistent census the consumer never pinned', () => {
+    // The exact reported bypass: a publisher controlling both the manifest and
+    // the context names TIBER-Data but selects its own semantics ref, source
+    // path, digest and population. Everything agrees with everything, and
+    // before this change that passed.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const attackerRef = 'Prometheus-Frameworks/TIBER-Data#999';
+    const attackerPath = 'tiber-data://census/2026/week-01-attacker';
+    real.population_census.semantics_ref = attackerRef;
+    real.population_census.census_artifact_ref.uri_or_path = attackerPath;
+    (context.census as any).semantics_ref = attackerRef;
+    (context.census as any).source_uri_or_path = attackerPath;
+    // The consumer's pin is untouched — that is the whole point.
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .toContain('census_provenance_ungoverned');
+  });
+
+  it('refuses an expected identity that does not name the governed owner', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    (context.expected_census_identity as any).owner_repository = 'Prometheus-Frameworks/TIBER-Forecast';
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .toContain('census_provenance_ungoverned');
+  });
+});
+
+describe('adversarial: 16 — a canonical id must belong to the record it cites', () => {
+  it('refuses a row carrying another row\'s canonical id', () => {
+    // The exact reported bypass: swap row 0's canonical id for row 1's, keep
+    // row 0's own valid census record id and digest, recompute the output
+    // digests. Every per-field check passes; the forecast is published for the
+    // wrong player.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const swapped = clone(realRows) as any[];
+    swapped[0].identity.canonical_player_id = realRows[1].identity!.canonical_player_id;
+    // Census evidence still describes the TRUE mapping.
+    const context = censusContext(realRows, real);
+    expect(codes(validateWeeklyPublication(real, swapped as any, context)))
+      .toContain('identity_evidence_unbound');
+  });
+
+  it('refuses admission without verified census record identities', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    delete (context.census as any).canonical_player_ids_by_row_id;
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .toContain('identity_evidence_unbound');
+  });
+
+  it('refuses two population rows resolving to the same canonical player', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const duplicated = clone(realRows) as any[];
+    duplicated[1].identity.canonical_player_id = duplicated[0].identity.canonical_player_id;
+    const context = censusContext(duplicated as any, real);
+    expect(codes(validateWeeklyPublication(real, duplicated as any, context)))
       .toContain('identity_evidence_unbound');
   });
 });
