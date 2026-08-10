@@ -653,6 +653,21 @@ describe('adversarial: 16 — a canonical id must belong to the record it cites'
       .toContain('identity_evidence_unbound');
   });
 
+  it('refuses a receipt decided after the pre-kickoff deadline', () => {
+    // The receipt is the first independently trusted binding of these bytes.
+    // An uncapped decision lets a document be authored after Week 1 is played,
+    // carry backdated manifest timestamps, and be admitted as a governed
+    // preseason forecast with results already in hand.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const receipt = receiptFor(real, realRows) as any;
+    receipt.decided_at = '2026-09-15T00:00:00.000Z'; // after Week 1 kicked off
+    const result = admitWeeklyPublication(
+      real, realRows, receipt, censusContext(realRows, real, receipt),
+    );
+    expect(result.admit).toBe(false);
+    expect(result.source).toBeNull();
+  });
+
   it('refuses downgrading a governed resolved player to unresolved', () => {
     // Selective suppression: the trusted census resolves this row, but the
     // publication marks it identity_unresolved, nulls the canonical id,

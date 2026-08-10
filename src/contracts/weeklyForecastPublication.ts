@@ -2210,6 +2210,13 @@ export function admitWeeklyPublication(
   if (
     !isCanonicalUtc(receipt.decided_at) ||
     new Date(receipt.decided_at).getTime() < new Date(manifest.generated_at).getTime() ||
+    // The receipt is the FIRST independently trusted binding of these bytes, so
+    // capping only the manifest's own timestamps caps nothing an author
+    // controls. An uncapped decision lets bytes be authored after kickoff -- or
+    // after Week 1 finishes, with results in hand -- carry backdated manifest
+    // timestamps, and still be admitted through the preseason path.
+    new Date(receipt.decided_at).getTime() >
+      new Date(WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC).getTime() ||
     !WEEKLY_SHA256_PATTERN.test(receipt.manifest_sha256) ||
     !WEEKLY_SHA256_PATTERN.test(receipt.player_rows_sha256) ||
     !WEEKLY_SHA256_PATTERN.test(receipt.decision_ref.content_sha256) ||
