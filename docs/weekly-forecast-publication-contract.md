@@ -276,6 +276,11 @@ repository or producing commit records provenance that nothing verified. This
 applies to the input pins, the fitted-model reference, the reconciliation
 evidence reference, and the census artifact reference.
 
+The rule applies to the pin SHAPES as well as the values they compare. The
+census artifact pin is a single optional object rather than two independently
+optional fields, because two optional fields make a partial pin representable —
+and a partial pin is silently no pin.
+
 Two further trust anchors are consumer-owned rather than manifest-derived.
 
 **Each required input class is pinned independently.** Verifying the exact bytes

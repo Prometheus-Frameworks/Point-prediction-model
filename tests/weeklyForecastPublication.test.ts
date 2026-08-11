@@ -2111,8 +2111,10 @@ describe('adversarial: 29 — every consumer-owned reference is bound whole', ()
     const context = censusContext(realRows, real);
     const pinned = {
       ...context.expected_census_identity!,
-      census_artifact_type: real.population_census.census_artifact_ref.artifact_type,
-      census_artifact_version: 'substituted-version',
+      census_artifact_ref: {
+        artifact_type: real.population_census.census_artifact_ref.artifact_type,
+        artifact_version: 'substituted-version',
+      },
     };
     expect(codes(validateWeeklyPublication(real, realRows, {
       ...context, expected_census_identity: pinned,
@@ -2126,12 +2128,43 @@ describe('adversarial: 29 — every consumer-owned reference is bound whole', ()
       ...context,
       expected_census_identity: {
         ...context.expected_census_identity!,
-        census_artifact_type: real.population_census.census_artifact_ref.artifact_type,
-        census_artifact_version: real.population_census.census_artifact_ref.artifact_version,
+        census_artifact_ref: {
+          artifact_type: real.population_census.census_artifact_ref.artifact_type,
+          artifact_version: real.population_census.census_artifact_ref.artifact_version,
+        },
       },
     }));
     expect(result).not.toContain('census_provenance_ungoverned');
     expect(result).not.toContain('input_source_ungoverned');
     expect(result).not.toContain('scoring_reconciliation_invalid');
+  });
+});
+
+describe('adversarial: 30 — a partial pin is not representable', () => {
+  it('refuses a relabelled type when the pin is supplied', () => {
+    // Previously the guard keyed on the type field alone, so a version-only
+    // pin was skipped entirely — a partial pin was silently no pin.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    for (const ref of [
+      { artifact_type: 'substituted-type', artifact_version: real.population_census.census_artifact_ref.artifact_version },
+      { artifact_type: real.population_census.census_artifact_ref.artifact_type, artifact_version: 'substituted-version' },
+      { artifact_type: 'substituted-type', artifact_version: 'substituted-version' },
+    ]) {
+      expect(codes(validateWeeklyPublication(real, realRows, {
+        ...context,
+        expected_census_identity: { ...context.expected_census_identity!, census_artifact_ref: ref },
+      }))).toContain('census_provenance_ungoverned');
+    }
+  });
+
+  it('treats the pin as absent only when the whole object is absent', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const identity = { ...context.expected_census_identity! };
+    delete (identity as any).census_artifact_ref;
+    expect(codes(validateWeeklyPublication(real, realRows, {
+      ...context, expected_census_identity: identity,
+    }))).not.toContain('census_provenance_ungoverned');
   });
 });

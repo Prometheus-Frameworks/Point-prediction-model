@@ -1288,9 +1288,19 @@ export interface WeeklyVerificationContext {
     source_input_sha256s: readonly string[];
   };
   expected_census_identity?: {
-    /** Optional artifact-type/version pin for the census reference. */
-    census_artifact_type?: string;
-    census_artifact_version?: string;
+    /**
+     * Optional artifact type/version pin for the census reference — all or
+     * nothing.
+     *
+     * Two independently optional fields made a PARTIAL pin representable, and
+     * a partial pin is silently no pin: supplying only the version left the
+     * comparison skipped entirely. Grouping them means the only two states are
+     * "pinned" and "not pinned".
+     */
+    census_artifact_ref?: {
+      artifact_type: string;
+      artifact_version: string;
+    };
     owner_repository: string;
     semantics_ref: string;
     source_uri_or_path: string;
@@ -2032,9 +2042,11 @@ export function validateWeeklyPublication(
       // the reference the manifest cites, and the loaded census carries the
       // bytes rather than the citation.
       if (
-        expected.census_artifact_type !== undefined &&
-        (expected.census_artifact_type !== manifest.population_census?.census_artifact_ref?.artifact_type ||
-          expected.census_artifact_version !== manifest.population_census?.census_artifact_ref?.artifact_version)
+        expected.census_artifact_ref &&
+        (expected.census_artifact_ref.artifact_type !==
+           manifest.population_census?.census_artifact_ref?.artifact_type ||
+         expected.census_artifact_ref.artifact_version !==
+           manifest.population_census?.census_artifact_ref?.artifact_version)
       ) {
         fail('census_provenance_ungoverned', 'population_census.census_artifact_ref',
           'The census artifact reference does not match the consumer-owned expected type and version.');
