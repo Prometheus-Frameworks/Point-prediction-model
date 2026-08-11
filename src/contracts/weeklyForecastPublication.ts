@@ -677,6 +677,7 @@ export type WeeklyValidationErrorCode =
   | 'unavailability_reason_contradicted'
   | 'unavailability_reason_unverifiable'
   | 'input_source_ungoverned'
+  | 'model_execution_unverified'
   | 'manifest_lifecycle_claims_eligibility'
   | 'manifest_identity_invalid'
   | 'scoring_profile_mismatch'
@@ -1220,6 +1221,24 @@ export interface WeeklyVerificationContext {
    * could be labelled canonical generic full-PPR with no evidence the inputs
    * were reconciled to that profile.
    */
+  /**
+   * Independently verified model execution.
+   *
+   * Model identity is otherwise accepted on syntax alone: any well-formed
+   * commit, configuration, feature and fitted-model digest passes. Nothing
+   * establishes that the cited model actually produced these rows from the
+   * admitted inputs, so an authority receipt could admit arbitrary projections
+   * labelled `model-inference`.
+   */
+  verified_model_execution?: {
+    status: 'succeeded' | 'failed';
+    implementation_commit_sha: string;
+    configuration_sha256: string;
+    feature_configuration_sha256: string;
+    fitted_model_sha256: string;
+    input_sha256s: readonly string[];
+    player_rows_sha256: string;
+  };
   verified_scoring_reconciliation?: {
     status: 'passed' | 'failed' | 'unavailable';
     evidence_sha256: string;
@@ -1566,6 +1585,45 @@ export function validateWeeklyPublication(
     fail('model_identity_invalid', 'model.fitted_model_ref.content_sha256',
       'Fitted model reference must carry a lowercase SHA-256.');
   }
+  // Model identity above is checked for SHAPE only: any well-formed commit and
+  // digest passes. Nothing there establishes that the cited model actually
+  // produced these rows from the admitted inputs, so a correctly pinned
+  // authority receipt could admit arbitrary projections labelled
+  // `model-inference`. A real publication must therefore carry an
+  // independently verified execution that binds the model, its configuration,
+  // the exact inputs, and the exact output rows.
+  if (!isExample) {
+    const run = context.verified_model_execution;
+    const admittedInputHashes = [...new Set((manifest.artifact_inputs ?? []).map((i) => i.content_sha256))]
+      .sort(compareForwardCanonicalStrings);
+    if (!run) {
+      fail('model_execution_unverified', 'verification_context.verified_model_execution',
+        'Admission requires an independently verified model execution; declared model identity ' +
+        'is shape, not evidence that these rows were produced by that model.');
+    } else if (
+      run.status !== 'succeeded' ||
+      run.implementation_commit_sha !== model?.implementation_commit_sha ||
+      run.configuration_sha256 !== model?.configuration_sha256 ||
+      run.feature_configuration_sha256 !== model?.feature_configuration_sha256 ||
+      run.fitted_model_sha256 !== model?.fitted_model_ref?.content_sha256
+    ) {
+      fail('model_execution_unverified', 'verification_context.verified_model_execution',
+        'The verified execution does not report success for the exact model, configuration, ' +
+        'features and fitted artifact this publication declares.');
+    } else if (
+      canonicalForwardJsonSha256(
+        [...new Set(run.input_sha256s ?? [])].sort(compareForwardCanonicalStrings),
+      ) !== canonicalForwardJsonSha256(admittedInputHashes)
+    ) {
+      fail('model_execution_unverified', 'verification_context.verified_model_execution',
+        'The verified execution consumed a different input set than the publication admits.');
+    } else if (run.player_rows_sha256 !== manifest.digests?.player_rows_sha256) {
+      // The run must have produced THESE rows. Without this the execution could
+      // be genuine and the published rows still substituted afterwards.
+      fail('model_execution_unverified', 'verification_context.verified_model_execution',
+        'The verified execution did not produce the published player rows.');
+    }
+  }
 
   // --- inputs -------------------------------------------------------------
   const inputs = manifest.artifact_inputs ?? [];
@@ -1684,11 +1742,19 @@ export function validateWeeklyPublication(
       // `unavailable_missing_required_inputs`; every membership check passes
       // because the membership genuinely lacks them. Only a consumer-owned pin
       // closes that, exactly as `expected_census_identity` does for the census.
-      if ((WEEKLY_REQUIRED_INPUT_CLASSES as readonly string[]).includes(input.input_class)) {
+      // EVERY admitted input is pinned, not only the required classes.
+      //
+      // An earlier revision exempted optional classes on the grounds that they
+      // cannot justify an unavailable status. That was true and beside the
+      // point: depth chart, schedule and availability inputs feed the model, so
+      // a stale or incomplete cutoff-eligible snapshot -- truthfully verified
+      // byte-for-byte -- still moves projections and ranks. Inability to
+      // suppress a player is not the same as inability to change the forecast.
+      {
         const expectedInput = context.expected_input_identities?.[input.input_class];
         if (!expectedInput) {
           fail('input_source_ungoverned', `${at}.content_sha256`,
-            `Admission requires a consumer-owned expected identity for required input class ` +
+            `Admission requires a consumer-owned expected identity for input class ` +
             `"${input.input_class}". Verifying the publisher's own selection is not provenance.`);
         } else if (
           expectedInput.content_sha256 !== input.content_sha256 ||

@@ -134,6 +134,15 @@ function censusContext(
         content_sha256: input.content_sha256,
       }]),
     ),
+    verified_model_execution: {
+      status: 'succeeded' as const,
+      implementation_commit_sha: forManifest.model.implementation_commit_sha,
+      configuration_sha256: forManifest.model.configuration_sha256,
+      feature_configuration_sha256: forManifest.model.feature_configuration_sha256,
+      fitted_model_sha256: forManifest.model.fitted_model_ref?.content_sha256 ?? '',
+      input_sha256s: [...new Set(forManifest.artifact_inputs.map((i) => i.content_sha256))],
+      player_rows_sha256: forManifest.digests.player_rows_sha256,
+    },
     verified_scoring_reconciliation: {
       status: 'passed' as const,
       evidence_sha256: forManifest.scoring_profile.source_reconciliation?.evidence_ref?.content_sha256 ?? '',
@@ -1877,5 +1886,94 @@ describe('adversarial: 23 — verified reconciliation must cover the admitted in
     const { manifest: real, rows: realRows } = realisedManifest();
     expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
       .not.toContain('scoring_reconciliation_invalid');
+  });
+});
+
+describe('adversarial: 24 — every admitted input is pinned, not just required ones', () => {
+  it('refuses an optional input the consumer never pinned', () => {
+    // An earlier revision exempted optional classes because they cannot justify
+    // an unavailable status. True, and beside the point: depth-chart, schedule
+    // and availability inputs feed the model, so a stale but cutoff-eligible
+    // snapshot moves projections and ranks while verifying perfectly.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const optionalClasses = real.artifact_inputs
+      .map((i) => i.input_class)
+      .filter((c) => !(WEEKLY_REQUIRED_INPUT_CLASSES as readonly string[]).includes(c));
+    const pins = { ...context.expected_input_identities! };
+    for (const cls of optionalClasses) delete (pins as any)[cls];
+
+    const result = validateWeeklyPublication(real, realRows, {
+      ...context, expected_input_identities: pins,
+    });
+    // The fixture may carry only required classes; assert the rule directly in
+    // that case rather than passing vacuously on an empty optional set.
+    if (optionalClasses.length === 0) {
+      const required = { ...context.expected_input_identities! };
+      delete (required as any)[real.artifact_inputs[0].input_class];
+      expect(codes(validateWeeklyPublication(real, realRows, {
+        ...context, expected_input_identities: required,
+      }))).toContain('input_source_ungoverned');
+    } else {
+      expect(codes(result)).toContain('input_source_ungoverned');
+    }
+  });
+});
+
+describe('adversarial: 25 — the model execution is verified, not declared', () => {
+  it('refuses a real publication with no verified execution', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    delete (context as any).verified_model_execution;
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .toContain('model_execution_unverified');
+  });
+
+  it('refuses an execution of a different model or configuration', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    for (const field of [
+      'implementation_commit_sha', 'configuration_sha256',
+      'feature_configuration_sha256', 'fitted_model_sha256',
+    ] as const) {
+      const run = { ...context.verified_model_execution!, [field]: 'f'.repeat(63) + 'a' };
+      expect(codes(validateWeeklyPublication(real, realRows, {
+        ...context, verified_model_execution: run,
+      }))).toContain('model_execution_unverified');
+    }
+  });
+
+  it('refuses an execution that consumed different inputs', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    expect(codes(validateWeeklyPublication(real, realRows, {
+      ...context,
+      verified_model_execution: {
+        ...context.verified_model_execution!,
+        input_sha256s: ['e'.repeat(63) + 'b'],
+      },
+    }))).toContain('model_execution_unverified');
+  });
+
+  it('refuses an execution that did not produce the published rows', () => {
+    // Without this the run could be genuine and the rows substituted after it.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    expect(codes(validateWeeklyPublication(real, realRows, {
+      ...context,
+      verified_model_execution: {
+        ...context.verified_model_execution!,
+        player_rows_sha256: 'd'.repeat(63) + 'c',
+      },
+    }))).toContain('model_execution_unverified');
+  });
+
+  it('refuses a failed execution', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    expect(codes(validateWeeklyPublication(real, realRows, {
+      ...context,
+      verified_model_execution: { ...context.verified_model_execution!, status: 'failed' },
+    }))).toContain('model_execution_unverified');
   });
 });

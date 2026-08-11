@@ -278,8 +278,13 @@ TIBER-Data artifacts, versions or subsets exist, an incomplete one could be
 chosen, truthfully verified, and the omitted players marked
 `unavailable_missing_required_inputs`, with every membership check passing
 because the membership genuinely lacks them. `expected_input_identities` pins
-owner repository, path and digest per required class; optional classes are not
-pinned, since they cannot suppress a player.
+owner repository, path and digest for **every** admitted input class.
+
+An earlier revision pinned only the required classes, reasoning that optional
+ones cannot justify an unavailable status. That is true and beside the point:
+depth-chart, schedule and availability inputs feed the model, so a stale but
+cutoff-eligible snapshot moves projections and ranks while verifying perfectly.
+Inability to suppress a player is not inability to change the forecast.
 
 **Scoring reconciliation is verified, not declared.** The manifest otherwise
 sets its own `status: 'passed'`, repeats its own input hashes, and cites any
@@ -289,9 +294,18 @@ evidence digest the manifest cites, the canonical profile digest, and the input
 digests that artifact actually covers. That last field is what stops a genuine
 `passed` reconciliation for one input set being cited for another — the
 manifest's own coverage copy sits on both sides of the earlier comparison, so it
-cannot detect the substitution. It matters precisely because optional inputs are
-unpinned: they cannot suppress a player, but swapping one does change the
-admitted hash set.
+cannot detect the substitution. It remains load-bearing even now that every
+input is pinned: the pins establish which artifact was used, this establishes
+that the reconciliation actually covers it.
+
+**The model execution is verified, not declared.** Model identity is otherwise
+checked for shape alone — any well-formed commit and digest passes — so a
+correctly pinned authority receipt could admit arbitrary projections labelled
+`model-inference`. A real publication must supply `verified_model_execution`
+reporting success for the exact model, configuration, features and fitted
+artifact, consuming exactly the admitted inputs, and producing exactly the
+published rows digest. That last binding is what stops a genuine run being cited
+while the rows are substituted afterwards.
 
 The verification context also carries the census's own `effective_at`, read from
 the exact bytes. The manifest duplicates that value and the duplicate must match;
