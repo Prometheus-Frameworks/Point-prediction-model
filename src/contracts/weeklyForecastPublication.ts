@@ -736,6 +736,7 @@ export type WeeklyValidationErrorCode =
   | 'forecast_status_precedence_violated'
   | 'unavailable_row_reason_unbound'
   | 'available_row_carries_status_reasons'
+  | 'rows_not_canonically_ordered'
   | 'census_membership_mismatch'
   | 'identity_fuzzy_join_used'
   | 'identity_synthetic_namespace_used'
@@ -2130,6 +2131,30 @@ export function validateWeeklyPublication(
   const duplicateRowIds = Array.from(rowIdCounts.entries()).filter(([, n]) => n > 1).map(([id]) => id);
   for (const id of duplicateRowIds) {
     fail('duplicate_population_row_id', 'rows', `Duplicate population_row_id "${id}".`);
+  }
+
+  // Canonical row order: ascending `population_row_id`.
+  //
+  // Nothing else in this contract is order-sensitive — membership is a set,
+  // ranks are checked by value, and every per-row rule is local — so the same
+  // logical publication could be emitted in any array order and each permutation
+  // hashed to a different `player_rows_sha256`, with every check passing. That
+  // makes the content address depend on producer iteration order, which defeats
+  // the point of content-addressing the artifact: two digests, one publication,
+  // and no way for a consumer to tell they are the same.
+  //
+  // Rejected rather than sorted before hashing. Canonicalising here would make
+  // the validator hash something other than the bytes it was handed, so the
+  // digest would no longer identify the artifact as published. The serializer
+  // version already fixes this order (§ canonical bytes); this enforces it.
+  for (let i = 1; i < rows.length; i += 1) {
+    if (compareForwardCanonicalStrings(
+      rows[i - 1].population_row_id, rows[i].population_row_id) > 0) {
+      fail('rows_not_canonically_ordered', `rows[${i}].population_row_id`,
+        `Rows must ascend by population_row_id: "${rows[i - 1].population_row_id}" precedes ` +
+        `"${rows[i].population_row_id}".`);
+      break;
+    }
   }
 
   // Recomputed status counts.

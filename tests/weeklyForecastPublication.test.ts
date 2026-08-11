@@ -3470,3 +3470,61 @@ describe('adversarial: 44 — reason coverage and reasons on available rows', ()
     expect(isWeeklyPublicationDocument(manifest) && parseWeeklyPlayerRows(bad).ok).toBe(false);
   });
 });
+
+describe('adversarial: 45 — one publication, one content address', () => {
+  /**
+   * Nothing else in this contract is order-sensitive: membership is a set, ranks
+   * are checked by value, and every per-row rule is local. So the same logical
+   * publication could be emitted in any array order, each permutation hashing to
+   * a different `player_rows_sha256`, with every check passing.
+   *
+   * That makes the content address depend on producer iteration order — two
+   * digests for one publication, and no way for a consumer to tell they are the
+   * same artifact. The serializer version already fixes row order as ascending
+   * `population_row_id`; this enforces it.
+   */
+  const reordered = (order: (rows: any[]) => any[]) => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const rows = order(clone(realRows as WeeklyPlayerRow[]) as any[]);
+    const manifest = clone(real) as any;
+    manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(rows);
+    manifest.outputs[0].content_sha256 = manifest.digests.player_rows_sha256;
+    return { manifest, rows, result: validateWeeklyPublication(manifest, rows, censusContext(rows, manifest)) };
+  };
+
+  it('refuses a reversed row array', () => {
+    const { result } = reordered((rows) => [...rows].reverse());
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('rows_not_canonically_ordered');
+  });
+
+  it('refuses a single adjacent swap', () => {
+    const { result } = reordered((rows) => {
+      const next = [...rows];
+      [next[0], next[1]] = [next[1], next[0]];
+      return next;
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('rows_not_canonically_ordered');
+  });
+
+  it('the permutation would otherwise have been admitted under a second digest', () => {
+    // Pins why this matters rather than just that it is refused. Without the
+    // ordering rule both permutations validate, and their digests differ.
+    const { manifest: real } = realisedManifest();
+    const { manifest: permuted, result } = reordered((rows) => [...rows].reverse());
+    expect(permuted.digests.player_rows_sha256)
+      .not.toBe(real.digests.player_rows_sha256);
+    // Every refusal is about ordering — nothing else objected to the permutation.
+    expect([...new Set(codes(result))]).toEqual(['rows_not_canonically_ordered']);
+  });
+
+  it('admits the committed fixture, which is already canonically ordered', () => {
+    const { manifest, rows } = realisedManifest();
+    const ids = rows.map((r) => r.population_row_id);
+    expect(ids).toEqual([...ids].sort());
+    const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+});

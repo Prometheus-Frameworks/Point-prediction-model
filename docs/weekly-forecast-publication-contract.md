@@ -235,6 +235,21 @@ unique, contiguous `1..N`, and consistent with the documented ordering
 player id ascending). Unavailable rows carry no rank or point forecast and at
 least one typed reason.
 
+### One publication, one content address
+
+Rows must ascend by `population_row_id`, and a publication whose rows arrive in
+any other order is **refused** (`rows_not_canonically_ordered`).
+
+Nothing else in this contract is order-sensitive — membership is a set, ranks are
+checked by value, and every per-row rule is local. Without this, the same logical
+publication could be emitted in any array order, each permutation hashing to a
+different `player_rows_sha256` while every other check passed: two content
+addresses for one artifact, and no way for a consumer to tell they are the same.
+
+Rejected rather than sorted before hashing. Canonicalising here would make the
+validator hash something other than the bytes it was handed, so the digest would
+no longer identify the artifact as published.
+
 ### A reason is a typed record, not a string
 
 `status_reasons` used to be a list of bare strings, checked only for being
