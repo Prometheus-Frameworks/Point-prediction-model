@@ -181,6 +181,9 @@ function censusContext(
       positions_by_row_id: Object.fromEntries(
         rowSet.map((r) => [r.population_row_id, r.identity?.position ?? null]),
       ),
+      identity_states_by_row_id: Object.fromEntries(
+        rowSet.map((r) => [r.population_row_id, r.identity!.identity_status]),
+      ),
       // Read from the census bytes, not copied from the manifest. Tests that
       // attack the binding override this explicitly.
       effective_at: forManifest.population_census.effective_at,
@@ -2285,4 +2288,57 @@ describe('adversarial: 34 — reconciliation validator identity is verified', ()
         .toContain('scoring_reconciliation_invalid');
     },
   );
+});
+
+describe('adversarial: 35 — identity state is census-derived, not publisher-declared', () => {
+  it('refuses relabelling unresolved as conflicting when the census says unresolved', () => {
+    // Both states map to a null canonical id, so the canonical-id binding
+    // cannot tell them apart, and the correspondence check alone compared two
+    // publisher-controlled fields to each other — a relabelling satisfied it
+    // trivially by moving both together.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(real, realRows, 3, 'identity_conflicting', 'identity_conflicting_reason');
+    (attack.rows[3] as any).identity.identity_status = 'conflicting';
+    attack.manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(attack.rows);
+    (attack.manifest.outputs[0] as any).content_sha256 = attack.manifest.digests.player_rows_sha256;
+
+    // Census still records the true state.
+    const context = censusContext(realRows, real);
+    const result = validateWeeklyPublication(attack.manifest, attack.rows, context);
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('identity_evidence_unbound');
+  });
+
+  it('refuses admission when the census records no identity state', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    delete (context.census as any).identity_states_by_row_id;
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .toContain('identity_evidence_unbound');
+  });
+
+  it('admits rows whose identity state matches the census', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .not.toContain('identity_evidence_unbound');
+  });
+});
+
+describe('the public context documentation matches the validator', () => {
+  const source = readFileSync(
+    path.join(repoRoot, 'src/contracts/weeklyForecastPublication.ts'),
+    'utf8',
+  );
+
+  it('does not describe input pins as required-classes-only', () => {
+    // The comment said REQUIRED after the validator began rejecting any
+    // admitted class without a pin, so a consumer following it would omit
+    // optional pins and have valid inputs refused.
+    const block = source.slice(
+      source.indexOf('Consumer-owned expected identity for'),
+      source.indexOf('expected_input_identities?:'),
+    );
+    expect(block).toContain('EVERY admitted input class');
+    expect(block).not.toMatch(/for each REQUIRED input class/);
+  });
 });

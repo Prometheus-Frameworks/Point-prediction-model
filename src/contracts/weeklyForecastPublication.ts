@@ -1198,8 +1198,9 @@ export interface WeeklyVerificationContext {
    * never from the publication being tested. Admission fails closed without it.
    */
   /**
-   * Consumer-owned expected identity for each REQUIRED input class, keyed by
-   * class name.
+   * Consumer-owned expected identity for EVERY admitted input class, keyed by
+   * class name. Required and optional classes alike — an admitted class with no
+   * pin is refused.
    *
    * Verifying the exact bytes the publisher selected proves only that those
    * bytes are what they claim, not that they are the source that SHOULD have
@@ -1207,6 +1208,10 @@ export interface WeeklyVerificationContext {
    * exist, a publisher can pick an incomplete one, have it truthfully verified,
    * and mark the omitted players `unavailable_missing_required_inputs` — every
    * membership check passes because the membership genuinely lacks them.
+   *
+   * Optional classes are pinned too: depth-chart, schedule and availability
+   * inputs feed the model, so a stale but cutoff-eligible snapshot moves
+   * projections and ranks even though it cannot suppress a player.
    */
   expected_input_identities?: Readonly<Record<string, {
     owner_repository: string;
@@ -1335,6 +1340,15 @@ export interface WeeklyVerificationContext {
      * a resolved row be relabelled `K` and suppressed on assertion alone.
      */
     positions_by_row_id?: Readonly<Record<string, string | null>>;
+    /**
+     * population_row_id → the identity state the governed census records.
+     *
+     * `canonical_player_ids_by_row_id` cannot distinguish `unresolved` from
+     * `conflicting`: both map to a null canonical id, so relabelling one as the
+     * other was invisible and the correspondence check compared two
+     * publisher-controlled fields to each other.
+     */
+    identity_states_by_row_id?: Readonly<Record<string, WeeklyIdentityStatus>>;
     /**
      * The effective instant read from the exact census bytes.
      *
@@ -2256,6 +2270,21 @@ export function validateWeeklyPublication(
         identity_unresolved: 'unresolved',
         identity_conflicting: 'conflicting',
       };
+      // The census-derived state first: without it the correspondence below
+      // compares two publisher-controlled fields to each other, which a
+      // relabelling satisfies trivially.
+      const governedIdentityState =
+        context.census?.identity_states_by_row_id?.[row.population_row_id];
+      if (context.census && governedIdentityState === undefined) {
+        fail('identity_evidence_unbound', `${at}.identity.identity_status`,
+          `The verified census records no identity state for "${row.population_row_id}".`);
+      } else if (governedIdentityState !== undefined &&
+                 row.identity?.identity_status !== governedIdentityState) {
+        fail('identity_evidence_unbound', `${at}.identity.identity_status`,
+          `Row "${row.population_row_id}" declares identity_status ` +
+          `'${row.identity?.identity_status}' while the verified census records ` +
+          `'${governedIdentityState}'.`);
+      }
       if (claimsIdentityProblem) {
         const expectedStatus = expectedIdentityStatusFor[row.forecast_status];
         if (row.identity?.identity_status !== expectedStatus) {

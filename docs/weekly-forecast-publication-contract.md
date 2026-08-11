@@ -252,7 +252,7 @@ So each reason is bound to whatever independently verifies it:
 
 | Reason | Rejected when |
 | --- | --- |
-| `identity_unresolved`, `identity_conflicting` | the verified census resolves the row to a canonical id, or the row's own `identity_status` is not the exact matching state (`unresolved` / `conflicting` respectively) — the crossed pairings are distinct states feeding published coverage counts |
+| `identity_unresolved`, `identity_conflicting` | the verified census resolves the row to a canonical id, or the row's own `identity_status` is not the exact matching state (`unresolved` / `conflicting` respectively) — the crossed pairings are distinct states feeding published coverage counts. The state itself is census-derived (`identity_states_by_row_id`), since `unresolved` and `conflicting` both map to a null canonical id and would otherwise be interchangeable |
 | `unavailable_missing_required_inputs` | every required input carries verified membership **and** all of them hold an eligible record for the row |
 | `no_prior_season_history` | a verified `prior_season_realized_outcomes` or `prior_season_usage_and_role` input holds an eligible record for the row |
 | `unsupported_position_domain` | the **verified census** assigns the row a supported offensive position |
@@ -308,7 +308,8 @@ chosen, truthfully verified, and the omitted players marked
 `unavailable_missing_required_inputs`, with every membership check passing
 because the membership genuinely lacks them. `expected_input_identities` pins
 owner repository, producing commit, artifact type, artifact version, path and
-digest for **every** admitted input class.
+digest for **every** admitted input class — optional classes included; an
+admitted class with no pin is refused.
 
 An earlier revision pinned only the required classes, reasoning that optional
 ones cannot justify an unavailable status. That is true and beside the point:

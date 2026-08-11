@@ -486,6 +486,9 @@ function exampleCensusContext(
       positions_by_row_id: Object.fromEntries(
         EXAMPLE_ROWS.map((row) => [row.population_row_id, row.identity?.position ?? null]),
       ),
+      identity_states_by_row_id: Object.fromEntries(
+        EXAMPLE_ROWS.map((row) => [row.population_row_id, row.identity!.identity_status]),
+      ),
       effective_at: forManifest.population_census.effective_at,
     },
   };
