@@ -2917,3 +2917,143 @@ describe('adversarial: 39 — unresolved is its own answer, and it must be sayab
     expect(admissible).toEqual(['eligibility_unresolved']);
   });
 });
+
+describe('adversarial: 40 — governed primary-status precedence', () => {
+  /**
+   * Each status is bound to its own dimension, which decides whether a claim is
+   * TRUE. It does not decide which of several true claims is PRIMARY. A row
+   * with both an unresolved identity and unresolved eligibility could be filed
+   * under either at the publisher's choice, so the same row lands in different
+   * `status_counts` buckets on different runs — published coverage a consumer
+   * cannot reproduce.
+   *
+   * The forward-artifact contract fixes the order (§4): identity, then
+   * unresolved eligibility, then ineligible, then unresolved position domain,
+   * then unsupported position, then missing required inputs, then available.
+   *
+   * Every case below builds a row that is CONSISTENT with the patched census in
+   * every other respect, so the only thing under test is which of the true
+   * statuses was chosen. A first draft skipped that and the positive control
+   * failed on three unrelated identity errors — the same invalid-baseline trap
+   * recorded earlier on this PR.
+   */
+  const publish = (
+    status: (typeof WEEKLY_FORECAST_STATUSES)[number],
+    census: { identity?: 'resolved' | 'unresolved' | 'conflicting'; eligibility?: string; position?: string | null },
+  ) => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const rowId = realRows[0].population_row_id;
+    const attack = suppressRowAs(real, realRows, 0, status, `${status}_reason`);
+    const identityState = census.identity ?? 'resolved';
+    const canonical = identityState === 'resolved'
+      ? (realRows[0].identity?.canonical_player_id ?? null)
+      : null;
+    const position = census.position === undefined
+      ? (realRows[0].identity?.position ?? null)
+      : census.position;
+
+    // Make the row agree with the census on every dimension except the status
+    // choice, so nothing but precedence can be what fails.
+    const rows = clone(attack.rows) as any[];
+    rows[0].identity.identity_status = identityState;
+    rows[0].identity.canonical_player_id = canonical;
+    rows[0].identity.position = position;
+    const manifest = clone(attack.manifest) as any;
+    // Identity coverage is recomputed from the rows and compared, so changing a
+    // row's identity_status must carry through to the summary or the baseline
+    // is invalid for a reason that has nothing to do with precedence.
+    const byState = (state: string) =>
+      rows.filter((r: any) => r.identity?.identity_status === state);
+    manifest.identity_coverage = {
+      census_row_count: rows.length,
+      resolved_count: byState('resolved').length,
+      unresolved_count: byState('unresolved').length,
+      conflicting_count: byState('conflicting').length,
+      coverage_rate: rows.length === 0 ? 0 : byState('resolved').length / rows.length,
+      unresolved_population_row_ids: byState('unresolved').map((r: any) => r.population_row_id),
+      conflicting_population_row_ids: byState('conflicting').map((r: any) => r.population_row_id),
+    };
+    manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(rows);
+    manifest.outputs[0].content_sha256 = manifest.digests.player_rows_sha256;
+
+    const base = censusContext(rows, manifest);
+    return validateWeeklyPublication(manifest, rows, {
+      ...base,
+      census: {
+        ...base.census!,
+        eligibility_states_by_row_id: {
+          ...base.census!.eligibility_states_by_row_id!,
+          [rowId]: (census.eligibility ?? 'eligible') as any,
+        },
+      },
+    });
+  };
+
+  it('refuses eligibility_unresolved when identity outranks it', () => {
+    // The reported case. Both claims are true; only one is primary.
+    const result = publish('eligibility_unresolved', {
+      identity: 'unresolved', eligibility: 'unresolved',
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('forecast_status_precedence_violated');
+  });
+
+  it('refuses position_domain_unresolved when eligibility outranks it', () => {
+    const result = publish('position_domain_unresolved', {
+      eligibility: 'unresolved', position: null,
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('forecast_status_precedence_violated');
+  });
+
+  it('refuses population_ineligible when identity outranks it', () => {
+    // Not one of the two statuses the finding named — the same rule reaches it.
+    const result = publish('population_ineligible', {
+      identity: 'conflicting', eligibility: 'ineligible',
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('forecast_status_precedence_violated');
+  });
+
+  it('refuses unsupported_position_domain when eligibility outranks it', () => {
+    const result = publish('unsupported_position_domain', {
+      eligibility: 'ineligible', position: 'K',
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('forecast_status_precedence_violated');
+  });
+
+  it('refuses a lower-precedence input status when the census already blocks', () => {
+    // The inverse direction: a row the census blocks cannot be filed under an
+    // input-evidence status either.
+    const result = publish('no_prior_season_history', { eligibility: 'unresolved' });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('forecast_status_precedence_violated');
+  });
+
+  it('refuses forecast_available when the census blocks at any level', () => {
+    const result = publish('forecast_available', { eligibility: 'unresolved' });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('forecast_status_precedence_violated');
+  });
+
+  it.each([
+    ['identity_unresolved', { identity: 'unresolved' as const, eligibility: 'unresolved' }],
+    ['identity_conflicting', { identity: 'conflicting' as const, eligibility: 'ineligible' }],
+    ['eligibility_unresolved', { eligibility: 'unresolved' }],
+    ['population_ineligible', { eligibility: 'ineligible' }],
+    ['position_domain_unresolved', { position: null }],
+    ['unsupported_position_domain', { position: 'K' }],
+  ] as const)('admits %s when it IS the highest-precedence true status', (status, census) => {
+    const result = publish(status as any, census as any);
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it('leaves the unmodified publication untouched', () => {
+    const { manifest, rows } = realisedManifest();
+    const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+});

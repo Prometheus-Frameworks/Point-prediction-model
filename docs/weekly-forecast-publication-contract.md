@@ -279,6 +279,32 @@ rather than being invented here. Each is truthful for exactly one governed value
 so neither is a suppression channel: a row the census resolves cannot borrow
 them, and a row it leaves unresolved cannot be ranked.
 
+### One true status, not any true status
+
+Binding each status to its own dimension decides whether a claim is *true*. It
+does not decide which of several true claims is *primary*. A row with both an
+unresolved identity and unresolved eligibility could be filed under either, so
+the same row would land in different `status_counts` buckets on different runs —
+published coverage a consumer cannot reproduce.
+
+The governed precedence (§4 validation rules) is therefore enforced:
+
+1. unresolved / conflicting identity
+2. unresolved eligibility
+3. ineligible
+4. unresolved position domain
+5. unsupported position
+6. missing required inputs
+7. available
+
+The census carries every dimension down to position, so levels 1–5 are decided
+from verified evidence and a row must be filed under the highest-precedence
+condition that holds (`forecast_status_precedence_violated` otherwise). Levels 6
+and 7 rest on input membership and stay with the checks that own them.
+
+This applies to every status, not only the two unresolved ones — a row the census
+blocks cannot be filed under an input-evidence status either.
+
 One status remains **categorically inadmissible**, for the same reason
 `calibrated` uncertainty is: this contract carries no evidence that could
 confirm or refute it in either direction, and a status whose truth cannot be

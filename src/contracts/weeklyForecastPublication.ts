@@ -684,6 +684,7 @@ export type WeeklyValidationErrorCode =
   | 'calibrated_uncertainty_unsupported'
   | 'identity_evidence_unbound'
   | 'eligibility_evidence_unbound'
+  | 'forecast_status_precedence_violated'
   | 'census_membership_mismatch'
   | 'identity_fuzzy_join_used'
   | 'identity_synthetic_namespace_used'
@@ -2295,6 +2296,51 @@ export function validateWeeklyPublication(
     if (context.census && governedEligibility === undefined) {
       fail('eligibility_evidence_unbound', `${at}.forecast_status`,
         `The verified census records no eligibility decision for "${row.population_row_id}".`);
+    }
+
+    // Governed primary-status precedence.
+    //
+    // Each status below is bound to its own dimension, which decides whether a
+    // claim is TRUE. It does not decide which of several true claims is the
+    // primary one. A row with both an unresolved identity and unresolved
+    // eligibility could therefore be filed under either, at the publisher's
+    // choice, and the published `status_counts` would differ — the same row
+    // reported in different buckets on different runs.
+    //
+    // The forward-artifact contract fixes the order (§4 validation rules):
+    // unresolved/conflicting identity, then unresolved eligibility, then
+    // ineligible, then unresolved position domain, then unsupported position,
+    // then missing required inputs, then available. The census carries every
+    // dimension down to position, so all of those are decidable here; the last
+    // two rest on input membership and stay with the checks that own them.
+    //
+    // Applied to EVERY row, not only the two statuses the finding named — the
+    // same ambiguity reaches `population_ineligible` and
+    // `unsupported_position_domain`, and fixing only what was reported would
+    // leave the identical defect one status over.
+    const governedPosition = context.census?.positions_by_row_id?.[row.population_row_id];
+    const governedPrimaryStatus: WeeklyForecastStatus | null = (() => {
+      if (governedIdentityState !== undefined && governedIdentityState !== 'resolved') {
+        return governedIdentityState === 'conflicting'
+          ? 'identity_conflicting'
+          : 'identity_unresolved';
+      }
+      if (governedEligibility === 'unresolved') return 'eligibility_unresolved';
+      if (governedEligibility === 'ineligible') return 'population_ineligible';
+      if (governedPosition === null) return 'position_domain_unresolved';
+      if (
+        governedPosition !== undefined &&
+        !(WEEKLY_SUPPORTED_POSITIONS as readonly string[]).includes(governedPosition)
+      ) {
+        return 'unsupported_position_domain';
+      }
+      return null;
+    })();
+    if (governedPrimaryStatus !== null && row.forecast_status !== governedPrimaryStatus) {
+      fail('forecast_status_precedence_violated', `${at}.forecast_status`,
+        `Row "${row.population_row_id}" declares ${row.forecast_status}, but the verified ` +
+        `census makes ${governedPrimaryStatus} the primary status under the governed ` +
+        'fail-closed precedence.');
     }
 
     if (row.forecast_status === 'forecast_available') {
