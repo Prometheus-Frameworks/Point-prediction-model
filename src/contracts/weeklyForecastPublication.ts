@@ -676,6 +676,7 @@ export type WeeklyValidationErrorCode =
   | 'unavailable_row_missing_reason'
   | 'unavailability_reason_contradicted'
   | 'unavailability_reason_unverifiable'
+  | 'input_source_ungoverned'
   | 'manifest_lifecycle_claims_eligibility'
   | 'manifest_identity_invalid'
   | 'scoring_profile_mismatch'
@@ -1195,6 +1196,35 @@ export interface WeeklyVerificationContext {
    * it must come from deployed configuration or a separately governed artifact,
    * never from the publication being tested. Admission fails closed without it.
    */
+  /**
+   * Consumer-owned expected identity for each REQUIRED input class, keyed by
+   * class name.
+   *
+   * Verifying the exact bytes the publisher selected proves only that those
+   * bytes are what they claim, not that they are the source that SHOULD have
+   * been used. Where several eligible TIBER-Data artifacts, versions or subsets
+   * exist, a publisher can pick an incomplete one, have it truthfully verified,
+   * and mark the omitted players `unavailable_missing_required_inputs` — every
+   * membership check passes because the membership genuinely lacks them.
+   */
+  expected_input_identities?: Readonly<Record<string, {
+    owner_repository: string;
+    uri_or_path: string;
+    content_sha256: string;
+  }>>;
+  /**
+   * Independently verified scoring reconciliation.
+   *
+   * The manifest otherwise declares its own `status: 'passed'`, repeats its own
+   * input hashes, and cites any syntactically valid reference — so forecasts
+   * could be labelled canonical generic full-PPR with no evidence the inputs
+   * were reconciled to that profile.
+   */
+  verified_scoring_reconciliation?: {
+    status: 'passed' | 'failed' | 'unavailable';
+    evidence_sha256: string;
+    scoring_profile_sha256: string;
+  };
   expected_census_identity?: {
     owner_repository: string;
     semantics_ref: string;
@@ -1474,6 +1504,26 @@ export function validateWeeklyPublication(
     fail('scoring_reconciliation_invalid', 'scoring_profile.source_reconciliation',
       'Scoring reconciliation must bind the canonical profile and every exact admitted input hash.');
   }
+  // The manifest declaring its own reconciliation `passed` is self-certification:
+  // it repeats its own input hashes and cites any syntactically valid reference.
+  // A real publication must carry the verified result and the exact evidence
+  // digest through the trusted context.
+  if (!isExample) {
+    const verifiedReconciliation = context.verified_scoring_reconciliation;
+    if (!verifiedReconciliation) {
+      fail('scoring_reconciliation_invalid', 'verification_context.verified_scoring_reconciliation',
+        'Admission requires independently verified scoring reconciliation; the manifest cannot ' +
+        'certify its own.');
+    } else if (
+      verifiedReconciliation.status !== 'passed' ||
+      verifiedReconciliation.evidence_sha256 !== reconciliationEvidence?.content_sha256 ||
+      verifiedReconciliation.scoring_profile_sha256 !== TIBER_GENERIC_FULL_PPR_V1_SHA256
+    ) {
+      fail('scoring_reconciliation_invalid', 'verification_context.verified_scoring_reconciliation',
+        'Verified scoring reconciliation must report passed, bind the exact evidence digest the ' +
+        'manifest cites, and reconcile to the canonical scoring profile.');
+    }
+  }
 
   const model = manifest.model;
   if (
@@ -1603,6 +1653,29 @@ export function validateWeeklyPublication(
       if (!countsMatch || !identityMatches) {
         fail('input_verification_binding_mismatch', `${at}.cutoff_evidence`,
           'Record-level evidence does not bind the exact input bytes, owner commit, cutoff, source timestamp, and counts.');
+      }
+      // Verifying the publisher's chosen bytes proves those bytes are what they
+      // claim — not that they are the source that SHOULD have been used. With
+      // several eligible artifacts, versions or subsets available, an incomplete
+      // one can be selected, truthfully verified, and the omitted players marked
+      // `unavailable_missing_required_inputs`; every membership check passes
+      // because the membership genuinely lacks them. Only a consumer-owned pin
+      // closes that, exactly as `expected_census_identity` does for the census.
+      if ((WEEKLY_REQUIRED_INPUT_CLASSES as readonly string[]).includes(input.input_class)) {
+        const expectedInput = context.expected_input_identities?.[input.input_class];
+        if (!expectedInput) {
+          fail('input_source_ungoverned', `${at}.content_sha256`,
+            `Admission requires a consumer-owned expected identity for required input class ` +
+            `"${input.input_class}". Verifying the publisher's own selection is not provenance.`);
+        } else if (
+          expectedInput.content_sha256 !== input.content_sha256 ||
+          expectedInput.owner_repository !== input.owner_repository ||
+          expectedInput.uri_or_path !== input.uri_or_path
+        ) {
+          fail('input_source_ungoverned', `${at}.content_sha256`,
+            `Required input "${input.input_id}" does not match the consumer-owned expected ` +
+            `source for class "${input.input_class}".`);
+        }
       }
       if (
         !isCanonicalUtc(verification.max_record_effective_at) ||

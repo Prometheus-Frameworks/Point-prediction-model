@@ -125,6 +125,20 @@ function censusContext(
     // The consumer's own pin, from deployed configuration rather than the
     // document under test. The fixtures reuse the governed values because the
     // fixture IS the governed census in these tests.
+    // Consumer-owned pins, from deployed configuration rather than the document
+    // under test. Attacks override these explicitly.
+    expected_input_identities: Object.fromEntries(
+      forManifest.artifact_inputs.map((input) => [input.input_class, {
+        owner_repository: input.owner_repository,
+        uri_or_path: input.uri_or_path,
+        content_sha256: input.content_sha256,
+      }]),
+    ),
+    verified_scoring_reconciliation: {
+      status: 'passed' as const,
+      evidence_sha256: forManifest.scoring_profile.source_reconciliation?.evidence_ref?.content_sha256 ?? '',
+      scoring_profile_sha256: forManifest.scoring_profile.profile_sha256,
+    },
     expected_census_identity: {
       owner_repository: WEEKLY_GOVERNED_CENSUS_OWNER,
       semantics_ref: forManifest.population_census.semantics_ref,
@@ -1723,5 +1737,92 @@ describe('adversarial: 20 — the census effective instant is verified, not asse
     const { manifest: real, rows: realRows } = realisedManifest();
     expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
       .not.toContain('census_effective_at_invalid');
+  });
+});
+
+describe('adversarial: 21 — the source itself must be consumer-pinned', () => {
+  // Verifying the publisher's chosen bytes proves those bytes are what they
+  // claim, not that they are the source that SHOULD have been used.
+
+  it('refuses a required input the consumer never pinned', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const pins = { ...context.expected_input_identities! };
+    delete (pins as any)['prior_season_realized_outcomes'];
+    expect(codes(validateWeeklyPublication(real, realRows, {
+      ...context, expected_input_identities: pins,
+    }))).toContain('input_source_ungoverned');
+  });
+
+  it('refuses a truthfully verified but unpinned substitute source', () => {
+    // The reported bypass: swap in a different, incomplete TIBER-Data artifact
+    // and verify it honestly. Counts, membership and digests all agree with the
+    // substituted bytes — only the consumer's own pin disagrees.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const substitute = clone(real) as any;
+    const target = substitute.artifact_inputs.find(
+      (i: any) => i.input_class === 'prior_season_realized_outcomes',
+    );
+    target.content_sha256 = 'd'.repeat(63) + 'e';
+    target.uri_or_path = 'tiber-data://prior-season-outcomes-subset';
+
+    // Evidence honestly describes the substituted bytes.
+    const context = censusContext(realRows, real);
+    const evidence = context.record_level_input_evidence!.map((e) =>
+      e.input_id === target.input_id
+        ? { ...e, input_content_sha256: target.content_sha256 }
+        : e,
+    );
+
+    const result = validateWeeklyPublication(substitute, realRows, {
+      ...context, record_level_input_evidence: evidence,
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('input_source_ungoverned');
+  });
+
+  it('does not pin optional input classes', () => {
+    // Only required classes gate admission; pinning everything would demand
+    // consumer configuration for sources that cannot suppress a player.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const pins = { ...context.expected_input_identities! };
+    for (const cls of Object.keys(pins)) {
+      if (!(WEEKLY_REQUIRED_INPUT_CLASSES as readonly string[]).includes(cls)) delete (pins as any)[cls];
+    }
+    expect(codes(validateWeeklyPublication(real, realRows, {
+      ...context, expected_input_identities: pins,
+    }))).not.toContain('input_source_ungoverned');
+  });
+});
+
+describe('adversarial: 22 — scoring reconciliation cannot certify itself', () => {
+  it('refuses a real publication with no independently verified reconciliation', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    delete (context as any).verified_scoring_reconciliation;
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .toContain('scoring_reconciliation_invalid');
+  });
+
+  it('refuses when the verified result is not passed', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    expect(codes(validateWeeklyPublication(real, realRows, {
+      ...context,
+      verified_scoring_reconciliation: { ...context.verified_scoring_reconciliation!, status: 'failed' },
+    }))).toContain('scoring_reconciliation_invalid');
+  });
+
+  it('refuses when the verified evidence is not the artifact the manifest cites', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    expect(codes(validateWeeklyPublication(real, realRows, {
+      ...context,
+      verified_scoring_reconciliation: {
+        ...context.verified_scoring_reconciliation!,
+        evidence_sha256: 'c'.repeat(63) + 'd',
+      },
+    }))).toContain('scoring_reconciliation_invalid');
   });
 });

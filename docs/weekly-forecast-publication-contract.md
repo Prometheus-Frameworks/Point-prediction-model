@@ -269,6 +269,24 @@ receipt and trusted binding, and admit a publication containing no rankings.
 | `population_ineligible` | census membership implies nothing about eligibility — the census is deliberately broad and *includes* ineligible records — and nothing else in the document speaks to it | a governed eligibility decision carried in the verification context |
 | `roster_state_unresolved` | membership in the roster input establishes only that a *timely* record exists; the governed row shape explicitly admits `team_assignment_status: unknown \| unavailable`, so a record can be present while the state is genuinely unresolved | the verified `team_assignment_status` of that record |
 
+Two further trust anchors are consumer-owned rather than manifest-derived.
+
+**Each required input class is pinned independently.** Verifying the exact bytes
+the publisher selected proves only that those bytes are what they claim — not
+that they are the source that *should* have been used. Where several eligible
+TIBER-Data artifacts, versions or subsets exist, an incomplete one could be
+chosen, truthfully verified, and the omitted players marked
+`unavailable_missing_required_inputs`, with every membership check passing
+because the membership genuinely lacks them. `expected_input_identities` pins
+owner repository, path and digest per required class; optional classes are not
+pinned, since they cannot suppress a player.
+
+**Scoring reconciliation is verified, not declared.** The manifest otherwise
+sets its own `status: 'passed'`, repeats its own input hashes, and cites any
+syntactically valid reference. A real publication must supply
+`verified_scoring_reconciliation` carrying the verified result, the exact
+evidence digest the manifest cites, and the canonical profile digest.
+
 The verification context also carries the census's own `effective_at`, read from
 the exact bytes. The manifest duplicates that value and the duplicate must match;
 the cutoff comparison uses the **verified** instant. Without that binding a
