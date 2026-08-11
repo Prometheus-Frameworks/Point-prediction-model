@@ -89,6 +89,13 @@ carries `verified_artifact_published_at` — the publication instant read from t
 artifact — and that instant is itself at or before the cutoff. Absent that proof
 the class is refused, *and* the strict record comparison stays in force.
 
+The one exception is a **schema example** that honestly declares
+`record_level_verification: 'unverified_requires_source_bytes'`. Such an example
+cannot supply the proof either, and demanding it would force the example to
+fabricate one — the opposite of what the honest-`unverified` path exists for.
+Nothing is waved through: examples are categorically non-admissible by artifact
+version, so `admitWeeklyPublication()` refuses them regardless.
+
 `source_as_of` cannot stand in for it. §2 of the forward-artifact contract
 defines `source_as_of` as the fact's domain time, states plainly that it "is not
 proof that the fact was knowable then", and forbids a semantic `source_as_of`

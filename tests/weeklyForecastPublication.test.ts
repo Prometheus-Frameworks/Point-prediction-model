@@ -3876,3 +3876,88 @@ describe('adversarial: 48 — the schedule exemption must be earned', () => {
     expect(result.valid).toBe(true);
   });
 });
+
+describe('adversarial: 49 — an honest schema example stays reviewable', () => {
+  /**
+   * The correction to adversarial 48. Requiring a verified publication instant
+   * is right for a real publication, but it ran unconditionally — so a schema
+   * example carrying the optional schedule class with its documented
+   * `unverified_requires_source_bytes` was reported as invalid for lacking
+   * evidence it says outright that it does not have.
+   *
+   * That contradicts the honest-`unverified` path this file already has, whose
+   * whole point is: do not fabricate verification merely to make an example
+   * validator-clean. Examples are categorically non-admissible by artifact
+   * version, so exempting them wave nothing through — which the last test here
+   * asserts rather than assumes.
+   */
+  const exampleWithSchedule = () => {
+    const next = clone(manifest) as any;
+    next.artifact_inputs = [...next.artifact_inputs, {
+      input_id: 'example-schedule-2026-w1',
+      input_class: 'schedule_and_opponent_context',
+      owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      owner_commit_sha: next.artifact_inputs[0].owner_commit_sha,
+      artifact_type: 'weekly_schedule',
+      artifact_version: 'weekly-schedule-v1',
+      uri_or_path: 'example://tiber-data/schedule/2026/week-01',
+      content_sha256: next.artifact_inputs[0].content_sha256,
+      source_as_of: '2026-05-14T00:00:00.000Z',
+      availability_rule_id: 'published_at_or_before_cutoff',
+      cutoff_evidence: {
+        input_class: 'schedule_and_opponent_context',
+        availability_rule_id: 'published_at_or_before_cutoff',
+        source_timestamp_locator: 'artifact.published_at',
+        normalization_rule_id: next.artifact_inputs[0].cutoff_evidence.normalization_rule_id,
+        self_reported_status: 'eligible',
+        record_count_eligible: 4,
+        // Every scheduled game is after the cutoff. That is what a schedule IS.
+        record_count_post_cutoff: 4,
+        record_count_unresolved: 0,
+        // The honest declaration: this example carries no source-byte proof.
+        record_level_verification: 'unverified_requires_source_bytes',
+      },
+      limitations: [],
+    }];
+    next.scoring_profile.source_reconciliation.source_input_sha256s =
+      [...new Set(next.artifact_inputs.map((i: any) => i.content_sha256))].sort() as string[];
+    return next as WeeklyForecastPublicationManifest;
+  };
+
+  it('is a schema example', () => {
+    // Pins the premise: the exemption keys off this, so if the fixture ever
+    // stops being an example the test below would silently change meaning.
+    expect(isWeeklySchemaExampleDocument(exampleWithSchedule())).toBe(true);
+  });
+
+  it('does not demand a publication instant the example says it lacks', () => {
+    const result = validateWeeklyPublication(exampleWithSchedule(), rows);
+    expect(codes(result)).not.toContain('input_publication_time_unverified');
+    expect(codes(result)).not.toContain('input_post_cutoff');
+  });
+
+  it('still demands it from a REAL publication', () => {
+    // The exemption is keyed to the example artifact version, not to the
+    // honest-unverified declaration alone.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const next = clone(real) as any;
+    next.artifact_inputs = [...next.artifact_inputs, {
+      ...clone(exampleWithSchedule().artifact_inputs.at(-1)!),
+      content_sha256: '9'.repeat(63) + 'a',
+      uri_or_path: 'tiber-data://schedule_and_opponent_context',
+    }];
+    next.scoring_profile.source_reconciliation.source_input_sha256s =
+      [...new Set(next.artifact_inputs.map((i: any) => i.content_sha256))].sort() as string[];
+    const result = validateWeeklyPublication(next, realRows, censusContext(realRows, next));
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('input_publication_time_unverified');
+  });
+
+  it('is still categorically non-admissible', () => {
+    // Why the exemption is safe: nothing reaches admission through it.
+    const decision = admitWeeklyPublication(exampleWithSchedule(), rows, null);
+    expect(decision.admit).toBe(false);
+    if (decision.admit) throw new Error('unreachable');
+    expect(decision.reason).toBe('schema_example_not_a_publication');
+  });
+});

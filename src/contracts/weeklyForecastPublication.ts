@@ -1983,13 +1983,22 @@ export function validateWeeklyPublication(
       isCanonicalUtc(verifiedPublishedAt) &&
       cutoffMs !== null &&
       new Date(verifiedPublishedAt as string).getTime() <= cutoffMs;
-    if (publishedAtGoverned && !publicationProven) {
+    // A schema example that honestly says it carries no source-byte verification
+    // cannot supply this proof either, and demanding it would force the example
+    // to fabricate one — the opposite of what the honest-`unverified` path below
+    // exists for. Examples are categorically non-admissible by artifact version,
+    // so nothing is waved through: `admitWeeklyPublication` refuses them outright.
+    const publicationExemptAsExample =
+      publishedAtGoverned &&
+      isExample &&
+      evidence?.record_level_verification === 'unverified_requires_source_bytes';
+    if (publishedAtGoverned && !publicationProven && !publicationExemptAsExample) {
       fail('input_publication_time_unverified', `${at}.cutoff_evidence`,
         `Input class "${input.input_class}" is governed by artifact.published_at, so admission ` +
         'requires an independently verified publication instant at or before the forecast ' +
         'cutoff. `source_as_of` is domain time and cannot stand in for it.');
     }
-    const recordTimesGovern = !publicationProven;
+    const recordTimesGovern = !publicationProven && !publicationExemptAsExample;
     if (recordTimesGovern && evidence?.record_count_post_cutoff > 0) {
       fail('input_post_cutoff', `${at}.cutoff_evidence`, 'Input admits records after the declared cutoff.');
     }
