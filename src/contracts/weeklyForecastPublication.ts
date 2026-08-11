@@ -1875,26 +1875,28 @@ export function validateWeeklyPublication(
     } else if (new Set(members).size !== members.length) {
       fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
         `Input "${evidence.input_id}" lists a population row more than once as eligible.`);
-    } else if (members.length > evidence.record_count_eligible) {
-      // Records and members are different units and must not be equated.
-      // `prior_season_realized_outcomes` is defined as *weekly* PPR outcomes,
-      // so one census player legitimately contributes ~17 eligible records to
-      // a single membership entry. Requiring equality rejected every real
-      // publication as a binding mismatch while only ever passing for inputs
-      // that happen to hold exactly one record per player.
+    } else if (evidence.record_count_eligible === 0 && members.length > 0) {
+      // Records and members are DIFFERENT UNITS with no derivable relation, so
+      // neither direction of a cardinality comparison is valid:
       //
-      // What must hold is the containment relation: every member needs at
-      // least one record behind it, so members can never outnumber records.
+      //   many records per member  `prior_season_realized_outcomes` is weekly,
+      //                            so one player contributes ~17 records;
+      //   many members per record  one `schedule_and_opponent_context` game
+      //                            record supplies opponent context for every
+      //                            player on both teams.
+      //
+      // An earlier revision required equality, which rejected the first case.
+      // Its correction required `members <= records`, which rejects the second
+      // and would have blocked any schedule-aware publication. The ratio simply
+      // is not a contract-level invariant; it is a property of each input
+      // class's record granularity, which this contract does not model.
+      //
+      // What does hold is the zero case: with no eligible records there is
+      // nothing from which membership could be derived. The membership list
+      // itself — not its length — is what the per-player checks rely on.
       fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
-        `Input "${evidence.input_id}" reports ${evidence.record_count_eligible} eligible records ` +
-        `but claims verified membership for ${members.length} population rows; a member requires ` +
-        'at least one record.');
-    } else if ((evidence.record_count_eligible > 0) !== (members.length > 0)) {
-      // Eligible records with no member, or a member with no records, means one
-      // of the two numbers is fabricated.
-      fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
-        `Input "${evidence.input_id}" reports ${evidence.record_count_eligible} eligible records ` +
-        `and ${members.length} eligible population rows; those cannot both be true.`);
+        `Input "${evidence.input_id}" reports no eligible records but claims verified membership ` +
+        `for ${members.length} population rows.`);
     }
   }
 

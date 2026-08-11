@@ -1564,17 +1564,31 @@ describe('adversarial: 18 — records and members are different units', () => {
       .not.toContain('input_verification_binding_mismatch');
   });
 
-  it('still refuses more members than records', () => {
-    // The containment relation that does hold: every member needs at least one
-    // record behind it, so members can never outnumber records.
+  it('permits more members than records', () => {
+    // The containment relation asserted by an earlier revision -- every member
+    // needs at least one record, so members cannot outnumber records -- is also
+    // false. One `schedule_and_opponent_context` game record supplies opponent
+    // context for every player on both teams, so members legitimately exceed
+    // records and requiring otherwise would block any schedule-aware
+    // publication. Neither direction of the ratio is a contract invariant.
+    //
+    // The manifest's declared count moves with the evidence, so this isolates
+    // the members-vs-records relation rather than tripping the separate
+    // evidence/manifest count binding.
     const { manifest: real, rows: realRows } = realisedManifest();
     const context = censusContext(realRows, real);
+    const oneRecordEach = clone(real) as any;
+    oneRecordEach.artifact_inputs = oneRecordEach.artifact_inputs.map((i: any) => ({
+      ...i,
+      cutoff_evidence: { ...i.cutoff_evidence, record_count_eligible: 1 },
+    }));
     const evidence = context.record_level_input_evidence!.map((e) => ({ ...e, record_count_eligible: 1 }));
-    expect(codes(validateWeeklyPublication(real, realRows, { ...context, record_level_input_evidence: evidence })))
-      .toContain('input_verification_binding_mismatch');
+    expect(codes(validateWeeklyPublication(
+      oneRecordEach, realRows, { ...context, record_level_input_evidence: evidence },
+    ))).not.toContain('input_verification_binding_mismatch');
   });
 
-  it('still refuses records with no member, or a member with no records', () => {
+  it('still refuses membership derived from no records at all', () => {
     const { manifest: real, rows: realRows } = realisedManifest();
     const context = censusContext(realRows, real);
 
@@ -1585,12 +1599,10 @@ describe('adversarial: 18 — records and members are different units', () => {
       real, realRows, { ...context, record_level_input_evidence: membersWithoutRecords },
     ))).toContain('input_verification_binding_mismatch');
 
-    const recordsWithoutMembers = context.record_level_input_evidence!.map((e) => ({
-      ...e, eligible_population_row_ids: [],
-    }));
-    expect(codes(validateWeeklyPublication(
-      real, realRows, { ...context, record_level_input_evidence: recordsWithoutMembers },
-    ))).toContain('input_verification_binding_mismatch');
+    // The converse is NOT asserted: an input can legitimately hold eligible
+    // records that apply to no census row, so records-without-members is not a
+    // contradiction. Per-player membership, not this count, is what the row
+    // checks rely on.
   });
 
   it('keeps the per-player membership guard working at realistic record counts', () => {
@@ -2166,5 +2178,45 @@ describe('adversarial: 30 — a partial pin is not representable', () => {
     expect(codes(validateWeeklyPublication(real, realRows, {
       ...context, expected_census_identity: identity,
     }))).not.toContain('census_provenance_ungoverned');
+  });
+});
+
+describe('adversarial: 31 — one source record may cover many population rows', () => {
+  it('admits an input whose members far exceed its record count', () => {
+    // `schedule_and_opponent_context`: one game record supplies opponent
+    // context for every player on both teams. Requiring members <= records
+    // would reject that verified input outright and block any schedule-aware
+    // publication from ever being admitted.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const oneRecord = clone(real) as any;
+    oneRecord.artifact_inputs = oneRecord.artifact_inputs.map((i: any) => ({
+      ...i,
+      cutoff_evidence: { ...i.cutoff_evidence, record_count_eligible: 1 },
+    }));
+    const evidence = context.record_level_input_evidence!.map((e) => ({
+      ...e,
+      record_count_eligible: 1,
+      // Membership unchanged: every census row, from that single record.
+    }));
+    expect(codes(validateWeeklyPublication(
+      oneRecord, realRows, { ...context, record_level_input_evidence: evidence },
+    ))).not.toContain('input_verification_binding_mismatch');
+  });
+
+  it('still refuses membership claimed from zero records', () => {
+    // The one direction that does hold: with no eligible records there is
+    // nothing from which membership could have been derived.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const noRecords = clone(real) as any;
+    noRecords.artifact_inputs = noRecords.artifact_inputs.map((i: any) => ({
+      ...i,
+      cutoff_evidence: { ...i.cutoff_evidence, record_count_eligible: 0 },
+    }));
+    const evidence = context.record_level_input_evidence!.map((e) => ({ ...e, record_count_eligible: 0 }));
+    expect(codes(validateWeeklyPublication(
+      noRecords, realRows, { ...context, record_level_input_evidence: evidence },
+    ))).toContain('input_verification_binding_mismatch');
   });
 });

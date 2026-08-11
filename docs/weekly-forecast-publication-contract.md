@@ -269,6 +269,16 @@ receipt and trusted binding, and admit a publication containing no rankings.
 | `population_ineligible` | census membership implies nothing about eligibility — the census is deliberately broad and *includes* ineligible records — and nothing else in the document speaks to it | a governed eligibility decision carried in the verification context |
 | `roster_state_unresolved` | membership in the roster input establishes only that a *timely* record exists; the governed row shape explicitly admits `team_assignment_status: unknown \| unavailable`, so a record can be present while the state is genuinely unresolved | the verified `team_assignment_status` of that record |
 
+**Record counts and membership counts are never compared.** They are different
+units with no derivable relation: `prior_season_realized_outcomes` is weekly, so
+one player contributes many records; one `schedule_and_opponent_context` game
+record supplies opponent context for many players. Requiring equality rejects
+the first, and requiring `members <= records` rejects the second. The ratio is a
+property of each input class's record granularity, which this contract does not
+model. Only the zero case is asserted — with no eligible records there is
+nothing from which membership could be derived — and the membership list itself,
+not its length, is what the per-player checks rely on.
+
 **Every consumer-owned reference is bound whole, never by digest alone.** A
 partially bound reference is an unbound reference for every field left out:
 retaining a digest while relabelling the artifact type, version, path,
