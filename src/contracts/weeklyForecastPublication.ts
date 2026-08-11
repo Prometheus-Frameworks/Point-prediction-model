@@ -1629,10 +1629,26 @@ export function validateWeeklyPublication(
     } else if (new Set(members).size !== members.length) {
       fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
         `Input "${evidence.input_id}" lists a population row more than once as eligible.`);
-    } else if (members.length !== evidence.record_count_eligible) {
+    } else if (members.length > evidence.record_count_eligible) {
+      // Records and members are different units and must not be equated.
+      // `prior_season_realized_outcomes` is defined as *weekly* PPR outcomes,
+      // so one census player legitimately contributes ~17 eligible records to
+      // a single membership entry. Requiring equality rejected every real
+      // publication as a binding mismatch while only ever passing for inputs
+      // that happen to hold exactly one record per player.
+      //
+      // What must hold is the containment relation: every member needs at
+      // least one record behind it, so members can never outnumber records.
       fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
         `Input "${evidence.input_id}" reports ${evidence.record_count_eligible} eligible records ` +
-        `but verified membership for ${members.length}.`);
+        `but claims verified membership for ${members.length} population rows; a member requires ` +
+        'at least one record.');
+    } else if ((evidence.record_count_eligible > 0) !== (members.length > 0)) {
+      // Eligible records with no member, or a member with no records, means one
+      // of the two numbers is fabricated.
+      fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
+        `Input "${evidence.input_id}" reports ${evidence.record_count_eligible} eligible records ` +
+        `and ${members.length} eligible population rows; those cannot both be true.`);
     }
   }
 
@@ -1827,9 +1843,6 @@ export function validateWeeklyPublication(
       .filter((i) => classes.includes(i.input_class))
       .filter((i) => verifiedMembersByInputId.get(i.input_id)?.has(rowId))
       .map((i) => i.input_id);
-  const verifiedCensusIds = context.census
-    ? new Set(context.census.population_row_ids)
-    : null;
 
   rows.forEach((row, index) => {
     const at = `rows[${index}]`;
@@ -2004,14 +2017,22 @@ export function validateWeeklyPublication(
         );
       }
 
-      // These two need no input evidence — they contradict material the
-      // validator has already verified or the row itself declares.
-      if (row.forecast_status === 'population_ineligible' && verifiedCensusIds?.has(row.population_row_id)) {
-        fail('unavailability_reason_contradicted', `${at}.forecast_status`,
-          `Row "${row.population_row_id}" claims population_ineligible while being a member of ` +
-          'the verified governed census population. An unavailability reason must be consistent ' +
-          'with the verified evidence.');
-      }
+      // `population_ineligible` is deliberately NOT bound to census membership.
+      //
+      // An earlier revision rejected it whenever the row was a census member,
+      // reasoning that membership and ineligibility contradict each other. They
+      // do not. The governed census is specified as a *broad* population — see
+      // §3.6 of the forward-artifact contract proposal: "The source artifact is
+      // a broad population census, not an already-filtered target list. It must
+      // include supported, unsupported, eligible, ineligible, and unresolved
+      // records so that whole domains cannot disappear before reconciliation."
+      //
+      // Every row in a valid publication is a census member by construction, so
+      // that check made `population_ineligible` impossible to declare in any
+      // fully verified publication — turning a required reconciliation status
+      // into a dead branch. Eligibility is governed evidence this contract does
+      // not yet carry; binding the status properly needs that evidence, and
+      // until it exists the status stays declarable.
       if (
         row.forecast_status === 'unsupported_position_domain' &&
         (WEEKLY_SUPPORTED_POSITIONS as readonly string[]).includes(row.identity?.position ?? '')

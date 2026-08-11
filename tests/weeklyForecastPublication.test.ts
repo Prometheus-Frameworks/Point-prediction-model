@@ -1335,7 +1335,14 @@ describe('adversarial: 17 — an unavailability reason must lose to the verified
     ))).toContain('unavailability_reason_contradicted');
   });
 
-  it('refuses "population ineligible" for a member of the verified governed census', () => {
+  it('still allows "population ineligible" for a census member', () => {
+    // An earlier revision of this suite pinned the opposite, on the reasoning
+    // that census membership and ineligibility contradict each other. They do
+    // not: §3.6 of the forward-artifact contract specifies a BROAD census that
+    // "must include supported, unsupported, eligible, ineligible, and
+    // unresolved records so that whole domains cannot disappear before
+    // reconciliation". Every row is a census member by construction, so the
+    // old rule made this required status impossible to declare anywhere.
     const { manifest: real, rows: realRows } = realisedManifest();
     const attack = suppressRowAs(
       real, realRows, 0,
@@ -1344,7 +1351,7 @@ describe('adversarial: 17 — an unavailability reason must lose to the verified
     );
     expect(codes(validateWeeklyPublication(
       attack.manifest, attack.rows, censusContext(realRows, real),
-    ))).toContain('unavailability_reason_contradicted');
+    ))).not.toContain('unavailability_reason_contradicted');
   });
 
   it('refuses "unsupported position domain" for a row declaring a supported position', () => {
@@ -1419,5 +1426,93 @@ describe('adversarial: 17 — an unavailability reason must lose to the verified
     );
     expect(codes(validateWeeklyPublication(partial, attack.rows, context)))
       .not.toContain('unavailability_reason_contradicted');
+  });
+});
+
+describe('adversarial: 18 — records and members are different units', () => {
+  // The reported defect: membership length was required to EQUAL
+  // `record_count_eligible`. `prior_season_realized_outcomes` is defined as
+  // *weekly* PPR outcomes, so one census player legitimately contributes ~17
+  // eligible records to a single membership entry. The equality therefore
+  // rejected every realistic publication, and only ever passed for inputs
+  // holding exactly one record per player — which the fixture happens to be.
+
+  /** Declare `perPlayer` records for each member, as a weekly input would. */
+  const withRecordsPerPlayer = (
+    real: WeeklyForecastPublicationManifest,
+    context: WeeklyVerificationContext,
+    perPlayer: number,
+  ) => {
+    const next = clone(real) as any;
+    const evidence = context.record_level_input_evidence!.map((e) => ({
+      ...e,
+      record_count_eligible: e.eligible_population_row_ids.length * perPlayer,
+    }));
+    next.artifact_inputs = next.artifact_inputs.map((input: any) => {
+      const match = evidence.find((e) => e.input_id === input.input_id)!;
+      return {
+        ...input,
+        cutoff_evidence: { ...input.cutoff_evidence, record_count_eligible: match.record_count_eligible },
+      };
+    });
+    return { manifest: next as WeeklyForecastPublicationManifest, context: { ...context, record_level_input_evidence: evidence } };
+  };
+
+  it('admits a weekly input holding many records per player', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const { manifest, context } = withRecordsPerPlayer(real, censusContext(realRows, real), 17);
+    const result = validateWeeklyPublication(manifest, realRows, context);
+    expect(codes(result)).not.toContain('input_verification_binding_mismatch');
+  });
+
+  it.each([1, 2, 17, 272])('admits %i records per member', (perPlayer) => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const { manifest, context } = withRecordsPerPlayer(real, censusContext(realRows, real), perPlayer);
+    expect(codes(validateWeeklyPublication(manifest, realRows, context)))
+      .not.toContain('input_verification_binding_mismatch');
+  });
+
+  it('still refuses more members than records', () => {
+    // The containment relation that does hold: every member needs at least one
+    // record behind it, so members can never outnumber records.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const evidence = context.record_level_input_evidence!.map((e) => ({ ...e, record_count_eligible: 1 }));
+    expect(codes(validateWeeklyPublication(real, realRows, { ...context, record_level_input_evidence: evidence })))
+      .toContain('input_verification_binding_mismatch');
+  });
+
+  it('still refuses records with no member, or a member with no records', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+
+    const membersWithoutRecords = context.record_level_input_evidence!.map((e) => ({
+      ...e, record_count_eligible: 0,
+    }));
+    expect(codes(validateWeeklyPublication(
+      real, realRows, { ...context, record_level_input_evidence: membersWithoutRecords },
+    ))).toContain('input_verification_binding_mismatch');
+
+    const recordsWithoutMembers = context.record_level_input_evidence!.map((e) => ({
+      ...e, eligible_population_row_ids: [],
+    }));
+    expect(codes(validateWeeklyPublication(
+      real, realRows, { ...context, record_level_input_evidence: recordsWithoutMembers },
+    ))).toContain('input_verification_binding_mismatch');
+  });
+
+  it('keeps the per-player membership guard working at realistic record counts', () => {
+    // The multi-record fix must not weaken the selective-suppression guard the
+    // count check sits next to: a row absent from verified membership is still
+    // refused, however many records the input declares.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const { manifest, context } = withRecordsPerPlayer(real, censusContext(realRows, real), 17);
+    const evidence = context.record_level_input_evidence!.map((e) =>
+      e.input_id === 'tiber-data-prior-season-outcomes-2025'
+        ? { ...e, eligible_population_row_ids: [realRows[0].population_row_id] }
+        : e,
+    );
+    expect(codes(validateWeeklyPublication(manifest, realRows, { ...context, record_level_input_evidence: evidence })))
+      .toContain('available_row_missing_required_input');
   });
 });
