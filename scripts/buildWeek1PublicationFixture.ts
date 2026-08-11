@@ -241,6 +241,14 @@ const EXAMPLE_ROWS: readonly WeeklyPlayerRow[] = [
 function buildManifest(rowsSha256: string): WeeklyForecastPublicationManifest {
   const censusRowCount = EXAMPLE_ROWS.length;
 
+  // `satisfies` rather than a bare object literal. Without a contextual type,
+  // every string literal here widens — `source_reconciliation.status` widened to
+  // `string` and the return below failed to compile, while `tsx` transpiled and
+  // ran it happily. The builder is the reproducible source of the published
+  // fixture, so it has to typecheck, not merely execute.
+  //
+  // `satisfies` keeps the inferred literal types (the spread below still yields
+  // a valid manifest) while checking the shape against the contract.
   const base = {
     artifact_type: WEEKLY_PUBLICATION_ARTIFACT_TYPE,
     // Example version: this document is not a real publication.
@@ -459,7 +467,7 @@ function buildManifest(rowsSha256: string): WeeklyForecastPublicationManifest {
       'Uncertainty is point-only: no interval is calibrated, so all range fields are null.',
       'Does not authorize running Forecast #170, training, promotion, Fantasy consumption, or deployment.',
     ],
-  };
+  } satisfies Omit<WeeklyForecastPublicationManifest, 'digests'>;
 
   // The manifest carries no digest *of itself* — that was self-referential, and
   // it meant an admission edit invalidated the digest that identifies the
