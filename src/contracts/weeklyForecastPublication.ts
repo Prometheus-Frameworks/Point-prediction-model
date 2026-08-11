@@ -737,6 +737,8 @@ export type WeeklyValidationErrorCode =
   | 'unavailable_row_reason_unbound'
   | 'available_row_carries_status_reasons'
   | 'rows_not_canonically_ordered'
+  | 'row_input_lineage_unverified'
+  | 'census_scope_unverified'
   | 'census_membership_mismatch'
   | 'identity_fuzzy_join_used'
   | 'identity_synthetic_namespace_used'
@@ -1503,6 +1505,17 @@ export interface WeeklyVerificationContext {
      * membership, identities and positions.
      */
     effective_at?: string;
+    /**
+     * The population scope read from the exact census bytes.
+     *
+     * The manifest declares `scope_definition` — who the census enumerates —
+     * and every provenance check around it compared owner, semantics ref,
+     * digest and source URI, none of which change when the scope sentence does.
+     * A publication could therefore describe the verified population under a
+     * scope the census never stated, which is the one field a reader uses to
+     * know WHO was supposed to be in the rankings.
+     */
+    scope_definition?: string;
   };
   /**
    * Verification results produced from the exact source bytes. An input id by
@@ -2110,6 +2123,24 @@ export function validateWeeklyPublication(
     fail('census_post_cutoff', 'population_census.effective_at',
       'Census effective_at may not be after forecast_cutoff.');
   }
+
+  // Scope, bound the same way as the effective instant.
+  //
+  // Owner, semantics ref, digest and source URI are all unchanged when a
+  // publisher rewrites the scope sentence, so nothing objected. Scope is what a
+  // reader uses to know WHO the census was supposed to enumerate — a
+  // publication describing a verified population under an invented scope
+  // misrepresents its own coverage while every hash still matches.
+  if (context.census) {
+    if (typeof context.census.scope_definition !== 'string' || !context.census.scope_definition) {
+      fail('census_scope_unverified', 'verification_context.census.scope_definition',
+        'The verified census must carry the scope definition read from its own bytes.');
+    } else if (context.census.scope_definition !== manifest.population_census?.scope_definition) {
+      fail('census_scope_unverified', 'population_census.scope_definition',
+        `Manifest census scope "${manifest.population_census?.scope_definition}" does not match ` +
+        `the verified census scope "${context.census.scope_definition}".`);
+    }
+  }
   if (
     manifest.population_census?.census_artifact_ref?.content_sha256 !==
       manifest.population_census?.census_sha256 ||
@@ -2369,10 +2400,29 @@ export function validateWeeklyPublication(
     } else {
       fail('fabricated_uncertainty', `${at}.uncertainty`, 'Unknown uncertainty status.');
     }
+    // Per-row lineage, checked against the verified source bytes.
+    //
+    // Being a DECLARED input id was the only requirement, and the membership
+    // check that did exist covered required inputs on available rows alone. So
+    // a row could claim lineage the evidence contradicts: an unavailable row
+    // claiming it used the very required input its own reason says is missing,
+    // or an available row crediting an optional source that holds no record for
+    // it. Published lineage is what a consumer reads to understand where a
+    // number came from, so an unverifiable claim there is not cosmetic.
+    //
+    // Only present evidence overrules a claim: an input without verified
+    // membership stays silent, exactly as elsewhere in this contract.
     for (const id of row.input_ids_used ?? []) {
       if (!declaredInputIds.has(id)) {
         fail('undeclared_input_id_referenced', `${at}.input_ids_used`,
           `Row references undeclared input id "${id}".`);
+        continue;
+      }
+      const members = verifiedMembersByInputId.get(id);
+      if (members && !members.has(row.population_row_id)) {
+        fail('row_input_lineage_unverified', `${at}.input_ids_used`,
+          `Row "${row.population_row_id}" claims it used input "${id}", but that input's ` +
+          'verified membership holds no eligible record for it.');
       }
     }
 

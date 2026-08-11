@@ -210,6 +210,7 @@ function censusContext(
       // Read from the census bytes, not copied from the manifest. Tests that
       // attack the binding override this explicitly.
       effective_at: forManifest.population_census.effective_at,
+      scope_definition: forManifest.population_census.scope_definition,
     },
     record_level_input_evidence: recordLevelEvidence,
     admission_authority: receipt ? trustedBindingFor(receipt) : undefined,
@@ -3523,6 +3524,117 @@ describe('adversarial: 45 — one publication, one content address', () => {
     const { manifest, rows } = realisedManifest();
     const ids = rows.map((r) => r.population_row_id);
     expect(ids).toEqual([...ids].sort());
+    const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+});
+
+describe('adversarial: 46 — per-row lineage and census scope', () => {
+  /**
+   * Two publisher declarations that survived every provenance check because
+   * nothing compared them with the evidence they describe.
+   */
+
+  // --- 1. input_ids_used -------------------------------------------------
+  //
+  // Being a DECLARED input id was the only requirement, and the membership
+  // check that existed covered required inputs on AVAILABLE rows alone. Lineage
+  // is what a consumer reads to understand where a number came from.
+  const withInputIds = (
+    pick: (r: WeeklyPlayerRow) => boolean,
+    ids: readonly string[],
+  ) => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const index = realRows.findIndex(pick);
+    expect(index).toBeGreaterThanOrEqual(0);
+    const rows = clone(realRows as WeeklyPlayerRow[]) as any[];
+    rows[index].input_ids_used = [...ids];
+    const manifest = clone(real) as any;
+    manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(rows);
+    manifest.outputs[0].content_sha256 = manifest.digests.player_rows_sha256;
+    return validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+  };
+
+  it('refuses an unavailable row claiming the input its reason says is missing', () => {
+    // The sharpest case: the row's own typed reason names this input as the
+    // one that failed, and its lineage credits the same input.
+    const result = withInputIds(
+      (r) => r.forecast_status === 'no_prior_season_history',
+      ['tiber-data-prior-season-outcomes-2025'],
+    );
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('row_input_lineage_unverified');
+  });
+
+  it('refuses an available row crediting an input that holds no record for it', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const target = realRows.find((r) => r.forecast_status === 'forecast_available')!;
+    const index = realRows.indexOf(target);
+    const rows = clone(realRows as WeeklyPlayerRow[]) as any[];
+    const manifest = clone(real) as any;
+    manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(rows);
+    manifest.outputs[0].content_sha256 = manifest.digests.player_rows_sha256;
+    const base = censusContext(rows, manifest);
+    // Verified evidence says one credited input holds no record for this row.
+    const credited = rows[index].input_ids_used[0];
+    const result = validateWeeklyPublication(manifest, rows, {
+      ...base,
+      record_level_input_evidence: base.record_level_input_evidence!.map((e) =>
+        e.input_id === credited
+          ? {
+            ...e,
+            eligible_population_row_ids: e.eligible_population_row_ids.filter(
+              (id) => id !== target.population_row_id,
+            ),
+          }
+          : e),
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('row_input_lineage_unverified');
+  });
+
+  it('stays silent for an input with no verified membership', () => {
+    // Only present evidence overrules a claim, as everywhere else here.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const credited = realRows.find((r) => r.forecast_status === 'forecast_available')!
+      .input_ids_used[0];
+    const result = validateWeeklyPublication(real, realRows, {
+      ...context,
+      record_level_input_evidence: context.record_level_input_evidence!.filter(
+        (e) => e.input_id !== credited,
+      ),
+    });
+    expect(codes(result)).not.toContain('row_input_lineage_unverified');
+  });
+
+  // --- 2. census scope ---------------------------------------------------
+  //
+  // Owner, semantics ref, digest and source URI are all unchanged when the
+  // scope sentence is rewritten, so every provenance check passed while the
+  // publication described its population as something the census never said.
+  it('refuses a manifest scope the verified census does not state', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const manifest = clone(real) as any;
+    manifest.population_census.scope_definition =
+      'Only players the publisher considers relevant';
+    const base = censusContext(realRows, real);
+    const result = validateWeeklyPublication(manifest, realRows, base);
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('census_scope_unverified');
+  });
+
+  it('refuses a context that carries no verified scope', () => {
+    const { manifest, rows } = realisedManifest();
+    const context = censusContext(rows, manifest);
+    delete (context.census as any).scope_definition;
+    expect(codes(validateWeeklyPublication(manifest, rows, context)))
+      .toContain('census_scope_unverified');
+  });
+
+  it('admits the unmodified publication', () => {
+    const { manifest, rows } = realisedManifest();
     const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
     expect(result.errors).toEqual([]);
     expect(result.valid).toBe(true);

@@ -524,6 +524,7 @@ function exampleCensusContext(
         EXAMPLE_ROWS.map((row) => [row.population_row_id, 'eligible' as const]),
       ),
       effective_at: forManifest.population_census.effective_at,
+      scope_definition: forManifest.population_census.scope_definition,
     },
   };
 }

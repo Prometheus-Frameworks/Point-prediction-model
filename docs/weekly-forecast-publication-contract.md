@@ -235,6 +235,29 @@ unique, contiguous `1..N`, and consistent with the documented ordering
 player id ascending). Unavailable rows carry no rank or point forecast and at
 least one typed reason.
 
+### Per-row lineage is checked, not just well-formed
+
+`input_ids_used` is the field a consumer reads to understand where a number came
+from. Being a *declared* input id used to be the only requirement, and the one
+membership check that existed covered required inputs on available rows alone.
+
+Every listed id is now checked against the verified membership for that input.
+An unavailable row can no longer claim it used the very required input its own
+typed reason says is missing, and an available row cannot credit an optional
+source that holds no eligible record for it. As everywhere else here, only
+*present* evidence overrules a claim: an input carrying no verified membership
+stays silent.
+
+### The census scope is verified too
+
+The manifest declares `scope_definition` — who the census enumerates. Owner,
+semantics reference, digest and source URI are all unchanged when a publisher
+rewrites that sentence, so every provenance check passed while the publication
+described its verified population as something the census never stated. Scope is
+precisely what a reader uses to know **who was supposed to be in the rankings**,
+so the verification context now carries the scope read from the census bytes and
+the manifest's copy must match it (`census_scope_unverified`).
+
 ### One publication, one content address
 
 Rows must ascend by `population_row_id`, and a publication whose rows arrive in
