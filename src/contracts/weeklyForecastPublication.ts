@@ -1210,6 +1210,9 @@ export interface WeeklyVerificationContext {
    */
   expected_input_identities?: Readonly<Record<string, {
     owner_repository: string;
+    owner_commit_sha: string;
+    artifact_type: string;
+    artifact_version: string;
     uri_or_path: string;
     content_sha256: string;
   }>>;
@@ -1264,7 +1267,13 @@ export interface WeeklyVerificationContext {
   };
   verified_scoring_reconciliation?: {
     status: 'passed' | 'failed' | 'unavailable';
-    evidence_sha256: string;
+    /** The COMPLETE evidence reference, not its digest alone. */
+    evidence_ref: {
+      repository: string;
+      path: string;
+      artifact_version: string;
+      content_sha256: string;
+    };
     scoring_profile_sha256: string;
     /**
      * The input digests the verified reconciliation artifact actually covers,
@@ -1279,6 +1288,9 @@ export interface WeeklyVerificationContext {
     source_input_sha256s: readonly string[];
   };
   expected_census_identity?: {
+    /** Optional artifact-type/version pin for the census reference. */
+    census_artifact_type?: string;
+    census_artifact_version?: string;
     owner_repository: string;
     semantics_ref: string;
     source_uri_or_path: string;
@@ -1569,7 +1581,8 @@ export function validateWeeklyPublication(
         'certify its own.');
     } else if (
       verifiedReconciliation.status !== 'passed' ||
-      verifiedReconciliation.evidence_sha256 !== reconciliationEvidence?.content_sha256 ||
+      canonicalForwardJsonSha256(verifiedReconciliation.evidence_ref ?? null) !==
+        canonicalForwardJsonSha256(reconciliationEvidence ?? null) ||
       verifiedReconciliation.scoring_profile_sha256 !== TIBER_GENERIC_FULL_PPR_V1_SHA256
     ) {
       fail('scoring_reconciliation_invalid', 'verification_context.verified_scoring_reconciliation',
@@ -1792,8 +1805,15 @@ export function validateWeeklyPublication(
             `Admission requires a consumer-owned expected identity for input class ` +
             `"${input.input_class}". Verifying the publisher's own selection is not provenance.`);
         } else if (
+          // Bound whole. A partially bound reference is an unbound reference
+          // for every field left out: retaining the digest while relabelling
+          // the artifact type, version or producing commit records input
+          // provenance nothing verified.
           expectedInput.content_sha256 !== input.content_sha256 ||
           expectedInput.owner_repository !== input.owner_repository ||
+          expectedInput.owner_commit_sha !== input.owner_commit_sha ||
+          expectedInput.artifact_type !== input.artifact_type ||
+          expectedInput.artifact_version !== input.artifact_version ||
           expectedInput.uri_or_path !== input.uri_or_path
         ) {
           fail('input_source_ungoverned', `${at}.content_sha256`,
@@ -2004,6 +2024,20 @@ export function validateWeeklyPublication(
       if (expected.owner_repository !== WEEKLY_GOVERNED_CENSUS_OWNER) {
         fail('census_provenance_ungoverned', 'population_census',
           `The expected census identity must name the governed owner (${WEEKLY_GOVERNED_CENSUS_OWNER}).`);
+      }
+      // The artifact type and version of the census reference, pinned for the
+      // same reason as every other reference here: retaining the digest while
+      // relabelling the surrounding metadata records provenance nothing
+      // verified. Compared against the manifest only — these fields describe
+      // the reference the manifest cites, and the loaded census carries the
+      // bytes rather than the citation.
+      if (
+        expected.census_artifact_type !== undefined &&
+        (expected.census_artifact_type !== manifest.population_census?.census_artifact_ref?.artifact_type ||
+          expected.census_artifact_version !== manifest.population_census?.census_artifact_ref?.artifact_version)
+      ) {
+        fail('census_provenance_ungoverned', 'population_census.census_artifact_ref',
+          'The census artifact reference does not match the consumer-owned expected type and version.');
       }
       if (!matchesExpected({
         owner_repository: context.census.owner_repository,

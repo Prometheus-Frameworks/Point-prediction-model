@@ -130,6 +130,9 @@ function censusContext(
     expected_input_identities: Object.fromEntries(
       forManifest.artifact_inputs.map((input) => [input.input_class, {
         owner_repository: input.owner_repository,
+        owner_commit_sha: input.owner_commit_sha,
+        artifact_type: input.artifact_type,
+        artifact_version: input.artifact_version,
         uri_or_path: input.uri_or_path,
         content_sha256: input.content_sha256,
       }]),
@@ -150,7 +153,7 @@ function censusContext(
     },
     verified_scoring_reconciliation: {
       status: 'passed' as const,
-      evidence_sha256: forManifest.scoring_profile.source_reconciliation?.evidence_ref?.content_sha256 ?? '',
+      evidence_ref: forManifest.scoring_profile.source_reconciliation!.evidence_ref,
       scoring_profile_sha256: forManifest.scoring_profile.profile_sha256,
       // Read from the verified artifact, not copied from the manifest.
       source_input_sha256s: [...new Set(forManifest.artifact_inputs.map((i) => i.content_sha256))],
@@ -1841,7 +1844,7 @@ describe('adversarial: 22 — scoring reconciliation cannot certify itself', () 
       ...context,
       verified_scoring_reconciliation: {
         ...context.verified_scoring_reconciliation!,
-        evidence_sha256: 'c'.repeat(63) + 'd',
+        evidence_ref: { ...context.verified_scoring_reconciliation!.evidence_ref, content_sha256: 'c'.repeat(63) + 'd' },
       },
     }))).toContain('scoring_reconciliation_invalid');
   });
@@ -2070,5 +2073,65 @@ describe('adversarial: 28 — the fitted-model reference is bound whole', () => 
     const { manifest: real, rows: realRows } = realisedManifest();
     expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
       .not.toContain('model_execution_unverified');
+  });
+});
+
+describe('adversarial: 29 — every consumer-owned reference is bound whole', () => {
+  // Applying the rule the fitted-model finding established, rather than waiting
+  // for each remaining reference to be reported one at a time: a partially
+  // bound reference is an unbound reference for every field left out.
+
+  it.each(['repository', 'path', 'artifact_version', 'content_sha256'] as const)(
+    'refuses a relabelled reconciliation evidence_ref.%s',
+    (field) => {
+      const { manifest: real, rows: realRows } = realisedManifest();
+      const relabelled = clone(real) as any;
+      relabelled.scoring_profile.source_reconciliation.evidence_ref[field] =
+        field === 'content_sha256' ? 'e'.repeat(63) + 'a' : `substituted-${field}`;
+      expect(codes(validateWeeklyPublication(relabelled, realRows, censusContext(realRows, real))))
+        .toContain('scoring_reconciliation_invalid');
+    },
+  );
+
+  it.each(['owner_commit_sha', 'artifact_type', 'artifact_version'] as const)(
+    'refuses an input whose %s diverges from the consumer pin',
+    (field) => {
+      // The digest is retained; only the surrounding identity moves.
+      const { manifest: real, rows: realRows } = realisedManifest();
+      const context = censusContext(realRows, real);
+      const relabelled = clone(real) as any;
+      relabelled.artifact_inputs[0][field] = `substituted-${field}`;
+      expect(codes(validateWeeklyPublication(relabelled, realRows, context)))
+        .toContain('input_source_ungoverned');
+    },
+  );
+
+  it('refuses a census artifact reference whose type or version was relabelled', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const pinned = {
+      ...context.expected_census_identity!,
+      census_artifact_type: real.population_census.census_artifact_ref.artifact_type,
+      census_artifact_version: 'substituted-version',
+    };
+    expect(codes(validateWeeklyPublication(real, realRows, {
+      ...context, expected_census_identity: pinned,
+    }))).toContain('census_provenance_ungoverned');
+  });
+
+  it('still admits references that match their pins exactly', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const result = codes(validateWeeklyPublication(real, realRows, {
+      ...context,
+      expected_census_identity: {
+        ...context.expected_census_identity!,
+        census_artifact_type: real.population_census.census_artifact_ref.artifact_type,
+        census_artifact_version: real.population_census.census_artifact_ref.artifact_version,
+      },
+    }));
+    expect(result).not.toContain('census_provenance_ungoverned');
+    expect(result).not.toContain('input_source_ungoverned');
+    expect(result).not.toContain('scoring_reconciliation_invalid');
   });
 });

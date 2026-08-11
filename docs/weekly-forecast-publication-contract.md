@@ -269,6 +269,13 @@ receipt and trusted binding, and admit a publication containing no rankings.
 | `population_ineligible` | census membership implies nothing about eligibility — the census is deliberately broad and *includes* ineligible records — and nothing else in the document speaks to it | a governed eligibility decision carried in the verification context |
 | `roster_state_unresolved` | membership in the roster input establishes only that a *timely* record exists; the governed row shape explicitly admits `team_assignment_status: unknown \| unavailable`, so a record can be present while the state is genuinely unresolved | the verified `team_assignment_status` of that record |
 
+**Every consumer-owned reference is bound whole, never by digest alone.** A
+partially bound reference is an unbound reference for every field left out:
+retaining a digest while relabelling the artifact type, version, path,
+repository or producing commit records provenance that nothing verified. This
+applies to the input pins, the fitted-model reference, the reconciliation
+evidence reference, and the census artifact reference.
+
 Two further trust anchors are consumer-owned rather than manifest-derived.
 
 **Each required input class is pinned independently.** Verifying the exact bytes
@@ -278,7 +285,8 @@ TIBER-Data artifacts, versions or subsets exist, an incomplete one could be
 chosen, truthfully verified, and the omitted players marked
 `unavailable_missing_required_inputs`, with every membership check passing
 because the membership genuinely lacks them. `expected_input_identities` pins
-owner repository, path and digest for **every** admitted input class.
+owner repository, producing commit, artifact type, artifact version, path and
+digest for **every** admitted input class.
 
 An earlier revision pinned only the required classes, reasoning that optional
 ones cannot justify an unavailable status. That is true and beside the point:
