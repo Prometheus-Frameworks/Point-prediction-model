@@ -815,3 +815,10 @@ export * from '../models/seasonal/forwardRidgeModel.js';
 export * from '../services/runForwardCandidateService.js';
 export * from '../validation/validateForwardCandidate.js';
 export * from '../artifacts/writeForwardCandidateArtifacts.js';
+
+// Weekly publication contract. `package.json` exposes only this entry point and
+// its `exports` map excludes source subpaths, so without this line the admission
+// seam the contract document advertises to consumers — `admitWeeklyPublication`,
+// its verification context and receipt types — was unreachable through every
+// supported package specifier.
+export * from '../contracts/weeklyForecastPublication.js';

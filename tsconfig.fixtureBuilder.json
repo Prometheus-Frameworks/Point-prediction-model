@@ -1,0 +1,19 @@
+{
+  // Typecheck boundary for the Week 1 publication fixture builder.
+  //
+  // The root tsconfig includes only `src` and `tests`, so `npm run build` never
+  // saw this file. `tsx` transpiles without semantic checking, and the contract
+  // tests read the committed JSON rather than importing the builder — so the
+  // reproducible SOURCE of the published fixture could fail to compile while
+  // every gate stayed green. It did: `source_reconciliation.status` widened to
+  // `string` and the manifest return was not assignable.
+  //
+  // Deliberately NOT `scripts/**`. Other scripts here carry pre-existing errors
+  // unrelated to this work, and sweeping them in would either fail the gate or
+  // pressure someone to loosen it. `files` names the one entry point; TypeScript
+  // follows its imports, so the contract and serializer it depends on are
+  // checked with it and nothing else is.
+  "extends": "./tsconfig.json",
+  "include": [],
+  "files": ["scripts/buildWeek1PublicationFixture.ts"]
+}

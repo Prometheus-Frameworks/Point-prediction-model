@@ -1,0 +1,3377 @@
+/**
+ * Publication contract for a governed **2026 Week 1 weekly Forecast ranking**.
+ *
+ * TIBER-Forecast #176. Types, canonical policy constants, a parser that accepts
+ * `unknown`, a validator, and a consumer-admission seam. It does not run a
+ * model, train anything, generate a real candidate, promote an artifact, or
+ * grant consumer eligibility.
+ *
+ * ## Design: the manifest cannot admit itself
+ *
+ * An earlier revision put a mutable `lifecycle.admission` block inside the
+ * manifest. That is self-inconsistent: the manifest is content-hashed, so
+ * editing the admission record to admit a publication invalidates the very
+ * digest that identifies it — and a reviewer could flip
+ * `consumer_eligibility` by hand.
+ *
+ * Admission is therefore a **separate, content-addressed receipt**
+ * (`WeeklyAdmissionReceipt`) that binds to an exact `manifest_sha256`. The
+ * consumer must independently pin the digest of that whole receipt plus its
+ * authority/decision identity through `WeeklyTrustedAdmissionBinding`; receipt
+ * bytes cannot establish their own authority. This mirrors the house pattern
+ * established by the Forward Run 1 binding on `main`
+ * (`src/experiments/forwardRun1/forwardRun1AdmissionBinding.ts`).
+ *
+ * Consequences, all enforced:
+ *   - a manifest may declare `draft` or `candidate` only, never eligibility;
+ *   - a receipt is valid only against the manifest digest it names and an
+ *     independently configured expected receipt digest;
+ *   - mutating a manifest, row, score, or receipt breaks the unchanged trust
+ *     binding and the consumer refuses.
+ *
+ * ## Lineage
+ *
+ * This repository is the renamed Point-prediction-Model. Legacy package name,
+ * routes, symbols, and Fantasy's `SCORING_SERVICE_BASE_URL` remain for
+ * compatibility. This contract extends that existing service lineage with a
+ * governed pre-Week-1 publication path; it does not introduce a competing
+ * producer, and it neither relabels, promotes, nor consumes the seasonal
+ * candidate governed by #167/#170.
+ */
+
+import {
+  canonicalForwardJsonSha256,
+  compareForwardCanonicalStrings,
+} from '../serialization/canonicalForwardArtifacts.js';
+import {
+  TIBER_GENERIC_FULL_PPR_V1,
+  TIBER_GENERIC_FULL_PPR_V1_PROFILE_ID,
+  TIBER_GENERIC_FULL_PPR_V1_PROFILE_VERSION,
+  TIBER_GENERIC_FULL_PPR_V1_SHA256,
+  type GenericFullPprProfileV1,
+  type ScoringReconciliationEvidenceRef,
+} from './genericFullPprProfile.js';
+
+// ---------------------------------------------------------------------------
+// Artifact identity
+// ---------------------------------------------------------------------------
+
+export const WEEKLY_PUBLICATION_ARTIFACT_TYPE =
+  'weekly_fantasy_point_forecast_publication' as const;
+export const WEEKLY_PUBLICATION_ARTIFACT_VERSION =
+  'weekly-fantasy-point-forecast-publication-v1' as const;
+export const WEEKLY_PUBLICATION_SCHEMA_EXAMPLE_VERSION =
+  'weekly-fantasy-point-forecast-publication-v1-example' as const;
+export const WEEKLY_PLAYER_ROWS_ARTIFACT_TYPE =
+  'weekly_fantasy_point_forecast_player_rows' as const;
+export const WEEKLY_PLAYER_ROWS_ARTIFACT_VERSION =
+  'weekly-fantasy-point-forecast-player-rows-v1' as const;
+export const WEEKLY_ADMISSION_RECEIPT_ARTIFACT_TYPE =
+  'weekly_fantasy_point_forecast_admission_receipt' as const;
+export const WEEKLY_ADMISSION_RECEIPT_ARTIFACT_VERSION =
+  'weekly-fantasy-point-forecast-admission-receipt-v1' as const;
+
+export const WEEKLY_OUTPUT_KIND = 'model-inference' as const;
+export const WEEKLY_SERIALIZER_ID = 'tiber-canonical-json-v1' as const;
+export const WEEKLY_SERIALIZER_VERSION = '1.0.0' as const;
+export const WEEKLY_SCORING_PROFILE_ID = 'tiber-generic-full-ppr-v1' as const;
+export const WEEKLY_CUTOFF_RULE = 'fact_available_at <= forecast_cutoff' as const;
+export const WEEKLY_RANK_BASIS = 'expected_generic_full_ppr_points_week' as const;
+export const WEEKLY_TARGET_SEASON = 2026 as const;
+export const WEEKLY_TARGET_WEEK = 1 as const;
+
+/**
+ * Contract-owned pre-kickoff deadline for the 2026 Week 1 publication.
+ *
+ * The entire `governed_preseason_publication` path assumes every fact backing
+ * the forecast was knowable before Week 1 began. Prohibiting in-season input
+ * *classes* is not sufficient on its own: without a declared ceiling, a
+ * document could move its `forecast_cutoff`, census `effective_at`, input
+ * evidence and `generated_at` into the regular season, keep every class label
+ * legal, and still be admitted through the preseason path — carrying exactly
+ * the information the prohibited-class list exists to keep out.
+ *
+ * This is a policy boundary owned by this contract, **not** an ingested
+ * schedule. A real publication whose governed schedule disagrees must amend
+ * this constant deliberately; it may not declare its own deadline.
+ */
+export const WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC = '2026-09-10T20:00:00.000Z' as const;
+export const WEEKLY_FORECAST_REPOSITORY =
+  'Prometheus-Frameworks/TIBER-Forecast' as const;
+/**
+ * The only repository whose census may bound this publication's population.
+ * TIBER-Data owns census semantics; a population sourced from anywhere else —
+ * including this repository — is not a governed census.
+ */
+export const WEEKLY_GOVERNED_CENSUS_OWNER =
+  'Prometheus-Frameworks/TIBER-Data' as const;
+export const WEEKLY_INPUT_NORMALIZATION_RULE_ID = 'utc-instant-v1' as const;
+
+export const WEEKLY_SUPPORTED_POSITIONS = ['QB', 'RB', 'WR', 'TE'] as const;
+export type WeeklySupportedPosition = (typeof WEEKLY_SUPPORTED_POSITIONS)[number];
+
+/**
+ * Documented deterministic ordering for published ranks.
+ *
+ * Ranks are 1..N over available rows, ordered by descending point forecast with
+ * ties broken by ascending canonical player id. Stated here so contiguity and
+ * ordering are both checkable rather than conventions.
+ */
+export const WEEKLY_RANK_ORDERING_RULE =
+  'point_forecast_desc_then_canonical_player_id_asc' as const;
+
+// ---------------------------------------------------------------------------
+// Canonical policy — the document may not weaken it
+// ---------------------------------------------------------------------------
+
+export const WEEKLY_PRESEASON_INPUT_CLASSES = [
+  'prior_season_realized_outcomes',
+  'prior_season_usage_and_role',
+  'depth_chart_and_role_priors',
+  'roster_and_team_assignment_state',
+  'schedule_and_opponent_context',
+  'player_availability_status',
+] as const;
+export type WeeklyPreseasonInputClass =
+  (typeof WEEKLY_PRESEASON_INPUT_CLASSES)[number];
+
+export const WEEKLY_PROHIBITED_PRESEASON_INPUT_CLASSES = [
+  'current_season_realized_outcomes',
+  'current_season_usage_and_role',
+  'target_week_in_game_facts',
+] as const;
+export type WeeklyProhibitedPreseasonInputClass =
+  (typeof WEEKLY_PROHIBITED_PRESEASON_INPUT_CLASSES)[number];
+
+export type WeeklyAvailabilityRuleId =
+  | 'prior_season_final_and_governed'
+  | 'state_effective_at_or_before_cutoff'
+  | 'published_at_or_before_cutoff';
+
+export interface WeeklyPreseasonInputClassRule {
+  input_class: WeeklyPreseasonInputClass;
+  availability_rule_id: WeeklyAvailabilityRuleId;
+  source_timestamp_locator: string;
+  owner_repository: string;
+  normalization_rule_id: typeof WEEKLY_INPUT_NORMALIZATION_RULE_ID;
+  required: boolean;
+  notes: string;
+}
+
+/**
+ * The canonical admissible-input policy.
+ *
+ * A publication **declares** these rules but cannot alter them: the validator
+ * compares the document's declaration against this constant and rejects any
+ * divergence. A document that shipped a relaxed rule set, a shortened
+ * prohibited list, or an alternate seasonal boundary would otherwise be able to
+ * weaken its own governance.
+ */
+export const WEEKLY_CANONICAL_INPUT_CLASS_RULES: readonly WeeklyPreseasonInputClassRule[] =
+  Object.freeze([
+    {
+      input_class: 'prior_season_realized_outcomes',
+      availability_rule_id: 'prior_season_final_and_governed',
+      source_timestamp_locator: 'artifact.source_as_of',
+      owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      normalization_rule_id: WEEKLY_INPUT_NORMALIZATION_RULE_ID,
+      required: true,
+      notes: 'Realized prior-season weekly PPR outcomes. Never current season.',
+    },
+    {
+      input_class: 'prior_season_usage_and_role',
+      availability_rule_id: 'prior_season_final_and_governed',
+      source_timestamp_locator: 'artifact.source_as_of',
+      owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      normalization_rule_id: WEEKLY_INPUT_NORMALIZATION_RULE_ID,
+      required: true,
+      notes: 'Prior-season usage/role aggregates.',
+    },
+    {
+      input_class: 'depth_chart_and_role_priors',
+      availability_rule_id: 'state_effective_at_or_before_cutoff',
+      source_timestamp_locator: 'record.effective_at',
+      owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      normalization_rule_id: WEEKLY_INPUT_NORMALIZATION_RULE_ID,
+      required: false,
+      notes: 'Preseason depth-chart state as of the cutoff.',
+    },
+    {
+      input_class: 'roster_and_team_assignment_state',
+      availability_rule_id: 'state_effective_at_or_before_cutoff',
+      source_timestamp_locator: 'record.effective_at',
+      owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      normalization_rule_id: WEEKLY_INPUT_NORMALIZATION_RULE_ID,
+      required: true,
+      notes: 'Team assignment / free-agency state.',
+    },
+    {
+      input_class: 'schedule_and_opponent_context',
+      availability_rule_id: 'published_at_or_before_cutoff',
+      source_timestamp_locator: 'artifact.published_at',
+      owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      normalization_rule_id: WEEKLY_INPUT_NORMALIZATION_RULE_ID,
+      required: false,
+      notes: 'Week 1 opponent context from the published schedule.',
+    },
+    {
+      input_class: 'player_availability_status',
+      availability_rule_id: 'state_effective_at_or_before_cutoff',
+      source_timestamp_locator: 'record.effective_at',
+      owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      normalization_rule_id: WEEKLY_INPUT_NORMALIZATION_RULE_ID,
+      required: false,
+      notes: 'Injury/availability designations known at the cutoff.',
+    },
+  ]);
+
+export const WEEKLY_REQUIRED_INPUT_CLASSES: readonly WeeklyPreseasonInputClass[] =
+  Object.freeze(
+    WEEKLY_CANONICAL_INPUT_CLASS_RULES.filter((rule) => rule.required).map(
+      (rule) => rule.input_class,
+    ),
+  );
+
+export const WEEKLY_SEASONAL_CANDIDATE_BOUNDARY = Object.freeze({
+  seasonal_candidate_run_id: 'seasonal-ppr-2026-forward-001',
+  relationship: 'disjoint',
+  may_relabel_seasonal_candidate: false,
+  may_promote_seasonal_candidate: false,
+  may_consume_seasonal_candidate: false,
+  note:
+    'The seasonal candidate governed by Forecast #167/#170 is point-only, ' +
+    'candidate_only, non_promotable and consumer_eligibility: never. It is not a ' +
+    'weekly publication and is not an input to one.',
+} as const);
+
+/**
+ * Markers that identify example/placeholder content.
+ *
+ * A **real** publication must contain none of these anywhere in its manifest,
+ * rows, or receipt. This is what stops a schema example from becoming a real
+ * publication by relabelling `artifact_version`.
+ */
+export const WEEKLY_EXAMPLE_MARKERS: readonly string[] = Object.freeze([
+  'example://',
+  '-example',
+  'example-canonical',
+  'not a real publication',
+  'schema example',
+  'placeholder',
+]);
+
+/** A hash consisting of a single repeated character is a placeholder. */
+export const WEEKLY_PLACEHOLDER_HASH_PATTERN = /^([0-9a-f])\1{63}$/;
+export const WEEKLY_SHA256_PATTERN = /^[0-9a-f]{64}$/;
+export const WEEKLY_COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
+/** Canonical UTC instant with millisecond precision. */
+export const WEEKLY_UTC_INSTANT_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+// ---------------------------------------------------------------------------
+// Evidence
+// ---------------------------------------------------------------------------
+
+export interface WeeklyEvidenceRef {
+  input_id: string | null;
+  uri_or_path: string;
+  content_sha256: string | null;
+  record_id: string | null;
+}
+
+export interface WeeklyContentRef {
+  artifact_type: string;
+  artifact_version: string;
+  uri_or_path: string;
+  content_sha256: string;
+}
+
+/**
+ * Cutoff evidence for one input.
+ *
+ * `self_reported_status` is exactly that — a producer claim, deliberately named
+ * so nothing reads it as a verification. The validator performs its own local
+ * check against `source_as_of`, and `record_level_verification` states honestly
+ * whether record-level timestamps could be checked at all without the source
+ * bytes. `unverified_requires_source_bytes` is the honest example default and
+ * always blocks a real publication. A real document must declare
+ * `locally_verified` and the verification context must independently bind the
+ * exact source bytes and evidence artifact.
+ */
+export type WeeklyCutoffStatus =
+  | 'eligible'
+  | 'ineligible_after_cutoff'
+  | 'unresolved';
+
+export type WeeklyRecordVerification =
+  | 'locally_verified'
+  | 'unverified_requires_source_bytes';
+
+export interface WeeklyInputCutoffEvidence {
+  source_timestamp_locator: string;
+  normalization_rule_id: string;
+  self_reported_status: WeeklyCutoffStatus;
+  record_level_verification: WeeklyRecordVerification;
+  record_count_eligible: number;
+  record_count_post_cutoff: number;
+  record_count_unresolved: number;
+}
+
+export interface WeeklyArtifactInput {
+  input_id: string;
+  input_class: WeeklyPreseasonInputClass;
+  owner_repository: string;
+  owner_commit_sha: string;
+  artifact_type: string;
+  artifact_version: string;
+  uri_or_path: string;
+  content_sha256: string;
+  /** The instant the validator locally compares with `forecast_cutoff`. */
+  source_as_of: string | null;
+  availability_rule_id: WeeklyAvailabilityRuleId;
+  cutoff_evidence: WeeklyInputCutoffEvidence;
+  limitations: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
+// Identity, census, rows
+// ---------------------------------------------------------------------------
+
+export type WeeklyIdentityStatus = 'resolved' | 'unresolved' | 'conflicting';
+
+/**
+ * The governed eligibility decision the census records for a population row.
+ *
+ * Vocabulary is the forward-artifact contract's own (`status.eligibility`,
+ * §3.6 governed row shape): a decision produced by the census's pinned
+ * eligibility policy, never inferred from membership.
+ */
+export type WeeklyCensusEligibilityState = 'eligible' | 'ineligible' | 'unresolved';
+
+export interface WeeklyPlayerIdentity {
+  canonical_player_id: string | null;
+  identity_status: WeeklyIdentityStatus;
+  source_identity_ref: WeeklyEvidenceRef;
+  display_name: string;
+  position: string | null;
+  nfl_team_abbr: string | null;
+  fuzzy_join_used: false;
+  synthetic_namespace_used: false;
+}
+
+export interface WeeklyIdentityCoverage {
+  census_row_count: number;
+  resolved_count: number;
+  unresolved_count: number;
+  conflicting_count: number;
+  coverage_rate: number;
+  unresolved_population_row_ids: readonly string[];
+  conflicting_population_row_ids: readonly string[];
+}
+
+export interface WeeklyPopulationCensusRef {
+  census_artifact_ref: WeeklyContentRef;
+  census_sha256: string;
+  semantics_owner: string;
+  semantics_ref: string;
+  scope_definition: string;
+  effective_at: string;
+  row_count: number;
+}
+
+export interface WeeklyPopulationReconciliation {
+  output_row_count: number;
+  duplicate_population_row_ids: readonly string[];
+  missing_population_row_ids: readonly string[];
+  extra_population_row_ids: readonly string[];
+  one_to_one_complete: boolean;
+}
+
+export const WEEKLY_FORECAST_STATUSES = [
+  'forecast_available',
+  'unavailable_missing_required_inputs',
+  'unsupported_position_domain',
+  'identity_unresolved',
+  'identity_conflicting',
+  'population_ineligible',
+  // The governed census can record eligibility or position as UNRESOLVED, and
+  // those are not the same claims as `population_ineligible` or
+  // `unsupported_position_domain`. Without their own statuses such a row had no
+  // truthful label at all: availability requires `eligible` and a supported
+  // position, while the ineligible/unsupported statuses require exactly
+  // `ineligible` and a governed unsupported position, and every evidence-based
+  // alternative is contradicted. Since the contract also requires one output row
+  // per census row, a SINGLE unresolved row made the whole publication
+  // un-admittable — verified by probing all eight prior statuses against such a
+  // row and finding every one refused.
+  //
+  // Both are in the governed artifact vocabulary (§4 `status.forecast`), so this
+  // adopts it rather than inventing one.
+  'eligibility_unresolved',
+  'position_domain_unresolved',
+  'no_prior_season_history',
+  'roster_state_unresolved',
+] as const;
+export type WeeklyForecastStatus = (typeof WEEKLY_FORECAST_STATUSES)[number];
+
+/**
+ * The governed reason dimensions (§4 `status_reasons[].dimension`).
+ */
+export const WEEKLY_STATUS_REASON_DIMENSIONS = [
+  'identity',
+  'population_eligibility',
+  'position_domain',
+  'required_input',
+] as const;
+export type WeeklyStatusReasonDimension = (typeof WEEKLY_STATUS_REASON_DIMENSIONS)[number];
+
+/**
+ * Which dimension each unavailability status belongs to.
+ *
+ * A reason used to be a bare string, checked only for being non-empty, so a
+ * fully verified run could publish `unavailable_missing_required_inputs`
+ * alongside an unrelated or invented reason and a consumer could not tell which
+ * required input had failed.
+ */
+export const WEEKLY_STATUS_REASON_DIMENSION_BY_STATUS: Readonly<
+  Record<Exclude<WeeklyForecastStatus, 'forecast_available'>, WeeklyStatusReasonDimension>
+> = Object.freeze({
+  identity_unresolved: 'identity',
+  identity_conflicting: 'identity',
+  population_ineligible: 'population_eligibility',
+  eligibility_unresolved: 'population_eligibility',
+  unsupported_position_domain: 'position_domain',
+  position_domain_unresolved: 'position_domain',
+  unavailable_missing_required_inputs: 'required_input',
+  no_prior_season_history: 'required_input',
+  roster_state_unresolved: 'required_input',
+});
+
+export interface WeeklyStatusReason {
+  dimension: WeeklyStatusReasonDimension;
+  /**
+   * Producer-native detail code.
+   *
+   * Deliberately NOT constrained to a closed set: nothing in this contract can
+   * verify a finer-grained code, and a field that admission cannot check is the
+   * defect this whole contract exists to avoid. What IS checked is everything
+   * verifiable around it — the dimension must match the row's governed status,
+   * and `input_id` must name a required input the row is genuinely missing from.
+   */
+  code: string;
+  /** Required for `required_input`, and null for every other dimension. */
+  input_id: string | null;
+}
+export type WeeklyStatusCounts = Record<WeeklyForecastStatus, number>;
+
+export interface WeeklyUnavailableUncertainty {
+  status: 'unavailable_not_calibrated';
+  method_id: null;
+  method_version: null;
+  lower_quantile: null;
+  median: null;
+  upper_quantile: null;
+  interval_lower: null;
+  interval_upper: null;
+}
+
+export interface WeeklyCalibratedUncertainty {
+  status: 'calibrated';
+  method_id: string;
+  method_version: string;
+  lower_quantile: number;
+  median: number;
+  upper_quantile: number;
+  interval_lower: number;
+  interval_upper: number;
+}
+
+export type WeeklyUncertainty =
+  | WeeklyUnavailableUncertainty
+  | WeeklyCalibratedUncertainty;
+
+export interface WeeklyAvailablePlayerRow {
+  population_row_id: string;
+  forecast_status: 'forecast_available';
+  identity: WeeklyPlayerIdentity & { canonical_player_id: string };
+  point_forecast: number;
+  rank: number;
+  uncertainty: WeeklyUncertainty;
+  input_ids_used: readonly string[];
+  actual_outcome: null;
+  status_reasons?: never;
+}
+
+export interface WeeklyUnavailablePlayerRow {
+  population_row_id: string;
+  forecast_status: Exclude<WeeklyForecastStatus, 'forecast_available'>;
+  identity: WeeklyPlayerIdentity;
+  point_forecast: null;
+  rank: null;
+  uncertainty: WeeklyUnavailableUncertainty;
+  input_ids_used: readonly string[];
+  actual_outcome: null;
+  status_reasons: readonly WeeklyStatusReason[];
+}
+
+export type WeeklyPlayerRow =
+  | WeeklyAvailablePlayerRow
+  | WeeklyUnavailablePlayerRow;
+
+// ---------------------------------------------------------------------------
+// Lifecycle (manifest side — pre-admission only)
+// ---------------------------------------------------------------------------
+
+/** States a manifest may declare about itself. Admission is not among them. */
+export const WEEKLY_MANIFEST_LIFECYCLE_STATES = ['draft', 'candidate'] as const;
+export type WeeklyManifestLifecycleState =
+  (typeof WEEKLY_MANIFEST_LIFECYCLE_STATES)[number];
+
+export const WEEKLY_DEFAULT_CONSUMER_ELIGIBILITY =
+  'not_eligible_pending_admission' as const;
+
+export const WEEKLY_ADMISSION_PATHS = [
+  'meaningful_current_season_inputs',
+  'governed_preseason_publication',
+] as const;
+export type WeeklyAdmissionPath = (typeof WEEKLY_ADMISSION_PATHS)[number];
+
+export interface WeeklyManifestLifecycle {
+  state: WeeklyManifestLifecycleState;
+  /** Literal. A manifest can never self-declare eligibility. */
+  consumer_eligibility: typeof WEEKLY_DEFAULT_CONSUMER_ELIGIBILITY;
+  admission_requires_receipt: true;
+}
+
+export interface WeeklyReliabilityTracking {
+  truth_label_owner: 'TIBER-Data';
+  truth_label_artifact_kind: 'realized_weekly_ppr_outcomes';
+  truth_label_ref: WeeklyEvidenceRef | null;
+  forge_role: 'explanatory_context_only';
+  forge_is_truth_label: false;
+  scored_at: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Manifest
+// ---------------------------------------------------------------------------
+
+export interface WeeklySerializationIdentity {
+  serializer_id: typeof WEEKLY_SERIALIZER_ID;
+  serializer_version: typeof WEEKLY_SERIALIZER_VERSION;
+}
+
+export interface WeeklyModelIdentity {
+  model_id: string;
+  model_version: string;
+  implementation_repository: typeof WEEKLY_FORECAST_REPOSITORY;
+  implementation_commit_sha: string;
+  /** SHA-256 of the exact commit object or an independently archived code bundle. */
+  implementation_commit_evidence_sha256: string;
+  configuration_sha256: string;
+  feature_configuration_sha256: string;
+  fitted_model_ref: WeeklyContentRef | null;
+}
+
+export interface WeeklyScoringProfile extends GenericFullPprProfileV1 {
+  profile_sha256: typeof TIBER_GENERIC_FULL_PPR_V1_SHA256;
+  source_reconciliation: ScoringReconciliationEvidenceRef;
+}
+
+export interface WeeklyTargetDefinition {
+  target_season: number;
+  target_week: number;
+  target_kind: 'single_scoring_week';
+  is_seasonal_total: false;
+  rank_basis: typeof WEEKLY_RANK_BASIS;
+  rank_ordering_rule: typeof WEEKLY_RANK_ORDERING_RULE;
+  scoring_profile_id: typeof WEEKLY_SCORING_PROFILE_ID;
+  league_specific: false;
+  supported_positions: readonly WeeklySupportedPosition[];
+  unsupported_domain: readonly string[];
+}
+
+export interface WeeklyDigests {
+  player_rows_sha256: string;
+  serialization: WeeklySerializationIdentity;
+}
+
+export interface WeeklyForecastPublicationManifest {
+  artifact_type: typeof WEEKLY_PUBLICATION_ARTIFACT_TYPE;
+  artifact_version:
+    | typeof WEEKLY_PUBLICATION_ARTIFACT_VERSION
+    | typeof WEEKLY_PUBLICATION_SCHEMA_EXAMPLE_VERSION;
+  document_kind: 'weekly_publication_manifest';
+  publication_id: string;
+  output_kind: typeof WEEKLY_OUTPUT_KIND;
+
+  target: WeeklyTargetDefinition;
+
+  forecast_cutoff: string;
+  generated_at: string;
+  cutoff_rule: typeof WEEKLY_CUTOFF_RULE;
+
+  preseason_input_class_rules: readonly WeeklyPreseasonInputClassRule[];
+  prohibited_input_classes: readonly WeeklyProhibitedPreseasonInputClass[];
+  artifact_inputs: readonly WeeklyArtifactInput[];
+
+  scoring_profile: WeeklyScoringProfile;
+  model: WeeklyModelIdentity;
+
+  population_census: WeeklyPopulationCensusRef;
+  population_reconciliation: WeeklyPopulationReconciliation;
+  identity_coverage: WeeklyIdentityCoverage;
+  status_counts: WeeklyStatusCounts;
+
+  uncertainty_status: 'unavailable_not_calibrated' | 'calibrated';
+  lifecycle: WeeklyManifestLifecycle;
+  reliability_tracking: WeeklyReliabilityTracking;
+  seasonal_candidate_boundary: typeof WEEKLY_SEASONAL_CANDIDATE_BOUNDARY;
+
+  outputs: readonly WeeklyContentRef[];
+  /** Note: contains no manifest digest — see `weeklyManifestSha256`. */
+  digests: WeeklyDigests;
+  limitations: readonly string[];
+}
+
+/**
+ * The manifest digest.
+ *
+ * Computed over the whole manifest. Because the manifest contains no
+ * self-referential digest field, this is well defined and stable — the earlier
+ * "digest of the manifest minus its digest block" arrangement was the source of
+ * the self-inconsistency.
+ */
+export function weeklyManifestSha256(
+  manifest: WeeklyForecastPublicationManifest,
+): string {
+  return canonicalForwardJsonSha256(manifest);
+}
+
+// ---------------------------------------------------------------------------
+// Admission receipt — separate, hashed, binds to an exact manifest
+// ---------------------------------------------------------------------------
+
+export interface WeeklyAdmissionReceipt {
+  artifact_type: typeof WEEKLY_ADMISSION_RECEIPT_ARTIFACT_TYPE;
+  artifact_version: typeof WEEKLY_ADMISSION_RECEIPT_ARTIFACT_VERSION;
+  document_kind: 'weekly_publication_admission_receipt';
+
+  /** The publication this receipt admits, bound by identity *and* digest. */
+  publication_id: string;
+  manifest_sha256: string;
+  player_rows_sha256: string;
+
+  /** Must match a consumer-configured authority binding, not caller input. */
+  authority_id: string;
+  authority_repository: string;
+  decided_by: string;
+  decided_at: string;
+  decision_ref: WeeklyDecisionRef;
+  admission_path: WeeklyAdmissionPath;
+  in_season_gate_weakened: false;
+  consumer_eligibility: 'eligible_admitted';
+  limitations: readonly string[];
+}
+
+/** A durable, content-addressed operator decision. Null hashes are forbidden. */
+export interface WeeklyDecisionRef {
+  input_id: null;
+  uri_or_path: string;
+  content_sha256: string;
+  record_id: string;
+}
+
+/** Digest of the whole, non-self-referential admission receipt. */
+export function weeklyAdmissionReceiptSha256(receipt: WeeklyAdmissionReceipt): string {
+  return canonicalForwardJsonSha256(receipt);
+}
+
+// ---------------------------------------------------------------------------
+// Safe parsing of unknown input
+// ---------------------------------------------------------------------------
+
+export type WeeklyValidationErrorCode =
+  | 'malformed_document'
+  | 'wrong_artifact_type'
+  | 'wrong_artifact_version'
+  | 'target_not_single_week'
+  | 'target_is_seasonal_total'
+  | 'target_field_invalid'
+  | 'cutoff_missing'
+  | 'cutoff_not_canonical_utc'
+  | 'generated_at_missing'
+  | 'generated_at_not_canonical_utc'
+  | 'generated_at_before_cutoff'
+  | 'cutoff_after_prekickoff_deadline'
+  | 'generated_at_after_prekickoff_deadline'
+  | 'policy_input_rules_altered'
+  | 'policy_prohibited_list_altered'
+  | 'policy_seasonal_boundary_altered'
+  | 'prohibited_input_class_admitted'
+  | 'required_input_class_missing'
+  | 'duplicate_input_id'
+  | 'duplicate_input_class'
+  | 'input_class_not_canonical'
+  | 'input_rule_mismatch'
+  | 'undeclared_input_id_referenced'
+  | 'input_post_cutoff'
+  | 'input_cutoff_unresolved'
+  | 'input_cutoff_unverified'
+  | 'input_source_as_of_invalid'
+  | 'input_verification_binding_mismatch'
+  | 'input_verification_artifact_invalid'
+  | 'census_effective_at_invalid'
+  | 'census_post_cutoff'
+  | 'population_reconciliation_incomplete'
+  | 'status_counts_mismatch'
+  | 'identity_coverage_mismatch'
+  | 'duplicate_population_row_id'
+  | 'empty_rows_for_non_empty_census'
+  | 'census_membership_unverified'
+  | 'census_provenance_ungoverned'
+  | 'calibrated_uncertainty_unsupported'
+  | 'identity_evidence_unbound'
+  | 'eligibility_evidence_unbound'
+  | 'forecast_status_precedence_violated'
+  | 'unavailable_row_reason_unbound'
+  | 'available_row_carries_status_reasons'
+  | 'rows_not_canonically_ordered'
+  | 'row_input_lineage_unverified'
+  | 'census_scope_unverified'
+  | 'input_publication_time_unverified'
+  | 'census_membership_mismatch'
+  | 'identity_fuzzy_join_used'
+  | 'identity_synthetic_namespace_used'
+  | 'available_row_identity_unresolved'
+  | 'available_row_point_forecast_invalid'
+  | 'available_row_rank_invalid'
+  | 'rank_not_unique'
+  | 'rank_not_contiguous'
+  | 'rank_ordering_violated'
+  | 'available_row_missing_required_input'
+  | 'fabricated_uncertainty'
+  | 'uncertainty_contract_mismatch'
+  | 'actual_outcome_present_before_target_week'
+  | 'rank_on_unavailable_row'
+  | 'unavailable_row_missing_reason'
+  | 'unavailability_reason_contradicted'
+  | 'unavailability_reason_unverifiable'
+  | 'input_source_ungoverned'
+  | 'model_execution_unverified'
+  | 'manifest_lifecycle_claims_eligibility'
+  | 'manifest_identity_invalid'
+  | 'scoring_profile_mismatch'
+  | 'scoring_reconciliation_invalid'
+  | 'model_identity_invalid'
+  | 'output_binding_invalid'
+  | 'serializer_identity_invalid'
+  | 'reliability_contract_invalid'
+  | 'example_marker_in_real_publication'
+  | 'placeholder_hash_in_real_publication'
+  | 'placeholder_commit_in_real_publication'
+  | 'invalid_sha256'
+  | 'player_rows_digest_mismatch';
+
+export interface WeeklyValidationIssue {
+  code: WeeklyValidationErrorCode;
+  path: string;
+  message: string;
+}
+
+export interface WeeklyParseSuccess<T> {
+  ok: true;
+  value: T;
+}
+export interface WeeklyParseFailure {
+  ok: false;
+  errors: readonly WeeklyValidationIssue[];
+}
+export type WeeklyParseResult<T> = WeeklyParseSuccess<T> | WeeklyParseFailure;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function issue(
+  code: WeeklyValidationErrorCode,
+  path: string,
+  message: string,
+): WeeklyValidationIssue {
+  return { code, path, message };
+}
+
+const malformed = (
+  errors: WeeklyValidationIssue[],
+  path: string,
+  message: string,
+): void => {
+  errors.push(issue('malformed_document', path, message));
+};
+
+function expectRecord(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): Record<string, unknown> | null {
+  if (!isRecord(value)) {
+    malformed(errors, path, 'Expected an object.');
+    return null;
+  }
+  return value;
+}
+
+function expectString(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+  nullable = false,
+): void {
+  if ((nullable && value === null) || (typeof value === 'string' && value.length > 0)) return;
+  malformed(errors, path, nullable ? 'Expected a non-empty string or null.' : 'Expected a non-empty string.');
+}
+
+function expectBoolean(value: unknown, path: string, errors: WeeklyValidationIssue[]): void {
+  if (typeof value !== 'boolean') malformed(errors, path, 'Expected a boolean.');
+}
+
+function expectNumber(value: unknown, path: string, errors: WeeklyValidationIssue[]): void {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    malformed(errors, path, 'Expected a finite number.');
+  }
+}
+
+function expectNullableNumber(value: unknown, path: string, errors: WeeklyValidationIssue[]): void {
+  if (value !== null) expectNumber(value, path, errors);
+}
+
+function expectArray(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+  item: (entry: unknown, entryPath: string, errors: WeeklyValidationIssue[]) => void,
+): void {
+  if (!Array.isArray(value)) {
+    malformed(errors, path, 'Expected an array.');
+    return;
+  }
+  value.forEach((entry, index) => item(entry, `${path}[${index}]`, errors));
+}
+
+const expectStringItem = (value: unknown, path: string, errors: WeeklyValidationIssue[]): void =>
+  expectString(value, path, errors);
+
+function parseEvidenceRefShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const ref = expectRecord(value, path, errors);
+  if (!ref) return;
+  expectString(ref.input_id, `${path}.input_id`, errors, true);
+  expectString(ref.uri_or_path, `${path}.uri_or_path`, errors);
+  expectString(ref.content_sha256, `${path}.content_sha256`, errors, true);
+  expectString(ref.record_id, `${path}.record_id`, errors, true);
+}
+
+function parseContentRefShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const ref = expectRecord(value, path, errors);
+  if (!ref) return;
+  expectString(ref.artifact_type, `${path}.artifact_type`, errors);
+  expectString(ref.artifact_version, `${path}.artifact_version`, errors);
+  expectString(ref.uri_or_path, `${path}.uri_or_path`, errors);
+  expectString(ref.content_sha256, `${path}.content_sha256`, errors);
+}
+
+function parseInputRuleShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const rule = expectRecord(value, path, errors);
+  if (!rule) return;
+  for (const key of [
+    'input_class', 'availability_rule_id', 'source_timestamp_locator',
+    'owner_repository', 'normalization_rule_id', 'notes',
+  ]) expectString(rule[key], `${path}.${key}`, errors);
+  expectBoolean(rule.required, `${path}.required`, errors);
+}
+
+function parseArtifactInputShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const input = expectRecord(value, path, errors);
+  if (!input) return;
+  for (const key of [
+    'input_id', 'input_class', 'owner_repository', 'owner_commit_sha',
+    'artifact_type', 'artifact_version', 'uri_or_path', 'content_sha256',
+    'availability_rule_id',
+  ]) expectString(input[key], `${path}.${key}`, errors);
+  expectString(input.source_as_of, `${path}.source_as_of`, errors, true);
+  expectArray(input.limitations, `${path}.limitations`, errors, expectStringItem);
+  const cutoff = expectRecord(input.cutoff_evidence, `${path}.cutoff_evidence`, errors);
+  if (!cutoff) return;
+  for (const key of [
+    'source_timestamp_locator', 'normalization_rule_id', 'self_reported_status',
+    'record_level_verification',
+  ]) expectString(cutoff[key], `${path}.cutoff_evidence.${key}`, errors);
+  if (
+    typeof cutoff.self_reported_status === 'string' &&
+    !['eligible', 'ineligible_after_cutoff', 'unresolved'].includes(
+      cutoff.self_reported_status,
+    )
+  ) malformed(errors, `${path}.cutoff_evidence.self_reported_status`, 'Unknown cutoff status.');
+  if (
+    typeof cutoff.record_level_verification === 'string' &&
+    !['locally_verified', 'unverified_requires_source_bytes'].includes(
+      cutoff.record_level_verification,
+    )
+  ) malformed(errors, `${path}.cutoff_evidence.record_level_verification`,
+    'Unknown record-level verification status.');
+  for (const key of [
+    'record_count_eligible', 'record_count_post_cutoff', 'record_count_unresolved',
+  ]) expectNumber(cutoff[key], `${path}.cutoff_evidence.${key}`, errors);
+}
+
+function parseScoringProfileShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const profile = expectRecord(value, path, errors);
+  if (!profile) return;
+  for (const key of ['profile_id', 'profile_version', 'profile_sha256']) {
+    expectString(profile[key], `${path}.${key}`, errors);
+  }
+  expectBoolean(profile.league_specific, `${path}.league_specific`, errors);
+  expectBoolean(profile.regular_season_only, `${path}.regular_season_only`, errors);
+  const weights = expectRecord(profile.weights, `${path}.weights`, errors);
+  if (weights) {
+    for (const key of [
+      'reception', 'receiving_yard', 'receiving_touchdown', 'rushing_yard',
+      'rushing_touchdown', 'passing_yard', 'passing_touchdown', 'interception',
+    ]) expectNumber(weights[key], `${path}.weights.${key}`, errors);
+  }
+  expectArray(profile.bonuses, `${path}.bonuses`, errors, () => undefined);
+  expectArray(profile.supported_positions, `${path}.supported_positions`, errors, expectStringItem);
+  expectArray(profile.unsupported_domains, `${path}.unsupported_domains`, errors, expectStringItem);
+  const reconciliation = expectRecord(
+    profile.source_reconciliation,
+    `${path}.source_reconciliation`,
+    errors,
+  );
+  if (!reconciliation) return;
+  for (const key of ['status', 'validator_id', 'validator_version', 'scoring_profile_sha256']) {
+    expectString(reconciliation[key], `${path}.source_reconciliation.${key}`, errors);
+  }
+  const evidenceRefPath = `${path}.source_reconciliation.evidence_ref`;
+  const evidenceRef = expectRecord(reconciliation.evidence_ref, evidenceRefPath, errors);
+  if (evidenceRef) {
+    for (const key of ['repository', 'path', 'artifact_version', 'content_sha256']) {
+      expectString(evidenceRef[key], `${evidenceRefPath}.${key}`, errors);
+    }
+  }
+  expectArray(
+    reconciliation.source_input_sha256s,
+    `${path}.source_reconciliation.source_input_sha256s`,
+    errors,
+    expectStringItem,
+  );
+}
+
+function parseIdentityShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const identity = expectRecord(value, path, errors);
+  if (!identity) return;
+  expectString(identity.canonical_player_id, `${path}.canonical_player_id`, errors, true);
+  expectString(identity.identity_status, `${path}.identity_status`, errors);
+  if (
+    typeof identity.identity_status === 'string' &&
+    !['resolved', 'unresolved', 'conflicting'].includes(identity.identity_status)
+  ) malformed(errors, `${path}.identity_status`, 'Unknown identity status.');
+  parseEvidenceRefShape(identity.source_identity_ref, `${path}.source_identity_ref`, errors);
+  expectString(identity.display_name, `${path}.display_name`, errors);
+  expectString(identity.position, `${path}.position`, errors, true);
+  expectString(identity.nfl_team_abbr, `${path}.nfl_team_abbr`, errors, true);
+  expectBoolean(identity.fuzzy_join_used, `${path}.fuzzy_join_used`, errors);
+  expectBoolean(identity.synthetic_namespace_used, `${path}.synthetic_namespace_used`, errors);
+}
+
+function parseUncertaintyShape(
+  value: unknown,
+  path: string,
+  errors: WeeklyValidationIssue[],
+): void {
+  const uncertainty = expectRecord(value, path, errors);
+  if (!uncertainty) return;
+  expectString(uncertainty.status, `${path}.status`, errors);
+  expectString(uncertainty.method_id, `${path}.method_id`, errors, true);
+  expectString(uncertainty.method_version, `${path}.method_version`, errors, true);
+  for (const key of [
+    'lower_quantile', 'median', 'upper_quantile', 'interval_lower', 'interval_upper',
+  ]) expectNullableNumber(uncertainty[key], `${path}.${key}`, errors);
+}
+
+/**
+ * Structural parse of untrusted input.
+ *
+ * Never throws: malformed input returns typed errors. Deep field semantics are
+ * checked by `validateWeeklyPublication`; this establishes only that the shape
+ * can be walked safely.
+ */
+export function parseWeeklyPublicationManifest(
+  input: unknown,
+): WeeklyParseResult<WeeklyForecastPublicationManifest> {
+  const errors: WeeklyValidationIssue[] = [];
+  try {
+    const document = expectRecord(input, '', errors);
+    if (!document) return { ok: false, errors };
+    if (document.artifact_type !== WEEKLY_PUBLICATION_ARTIFACT_TYPE) {
+      errors.push(issue('wrong_artifact_type', 'artifact_type', 'Unexpected artifact_type.'));
+    }
+    if (
+      document.artifact_version !== WEEKLY_PUBLICATION_ARTIFACT_VERSION &&
+      document.artifact_version !== WEEKLY_PUBLICATION_SCHEMA_EXAMPLE_VERSION
+    ) {
+      errors.push(issue('wrong_artifact_version', 'artifact_version', 'Unexpected artifact_version.'));
+    }
+    for (const key of [
+      'artifact_type', 'artifact_version', 'document_kind', 'publication_id',
+      'output_kind', 'forecast_cutoff', 'generated_at', 'cutoff_rule',
+      'uncertainty_status',
+    ]) expectString(document[key], key, errors);
+
+    const target = expectRecord(document.target, 'target', errors);
+    if (target) {
+      expectNumber(target.target_season, 'target.target_season', errors);
+      expectNumber(target.target_week, 'target.target_week', errors);
+      for (const key of [
+        'target_kind', 'rank_basis', 'rank_ordering_rule', 'scoring_profile_id',
+      ]) expectString(target[key], `target.${key}`, errors);
+      expectBoolean(target.is_seasonal_total, 'target.is_seasonal_total', errors);
+      expectBoolean(target.league_specific, 'target.league_specific', errors);
+      expectArray(target.supported_positions, 'target.supported_positions', errors, expectStringItem);
+      expectArray(target.unsupported_domain, 'target.unsupported_domain', errors, expectStringItem);
+    }
+
+    expectArray(
+      document.preseason_input_class_rules,
+      'preseason_input_class_rules',
+      errors,
+      parseInputRuleShape,
+    );
+    expectArray(
+      document.prohibited_input_classes,
+      'prohibited_input_classes',
+      errors,
+      expectStringItem,
+    );
+    expectArray(document.artifact_inputs, 'artifact_inputs', errors, parseArtifactInputShape);
+    parseScoringProfileShape(document.scoring_profile, 'scoring_profile', errors);
+
+    const model = expectRecord(document.model, 'model', errors);
+    if (model) {
+      for (const key of [
+        'model_id', 'model_version', 'implementation_repository',
+        'implementation_commit_sha', 'implementation_commit_evidence_sha256',
+        'configuration_sha256', 'feature_configuration_sha256',
+      ]) expectString(model[key], `model.${key}`, errors);
+      if (model.fitted_model_ref !== null) {
+        parseContentRefShape(model.fitted_model_ref, 'model.fitted_model_ref', errors);
+      }
+    }
+
+    const census = expectRecord(document.population_census, 'population_census', errors);
+    if (census) {
+      parseContentRefShape(census.census_artifact_ref, 'population_census.census_artifact_ref', errors);
+      for (const key of [
+        'census_sha256', 'semantics_owner', 'semantics_ref', 'scope_definition', 'effective_at',
+      ]) expectString(census[key], `population_census.${key}`, errors);
+      expectNumber(census.row_count, 'population_census.row_count', errors);
+    }
+
+    const reconciliation = expectRecord(
+      document.population_reconciliation,
+      'population_reconciliation',
+      errors,
+    );
+    if (reconciliation) {
+      expectNumber(reconciliation.output_row_count, 'population_reconciliation.output_row_count', errors);
+      for (const key of [
+        'duplicate_population_row_ids', 'missing_population_row_ids', 'extra_population_row_ids',
+      ]) expectArray(reconciliation[key], `population_reconciliation.${key}`, errors, expectStringItem);
+      expectBoolean(reconciliation.one_to_one_complete, 'population_reconciliation.one_to_one_complete', errors);
+    }
+
+    const coverage = expectRecord(document.identity_coverage, 'identity_coverage', errors);
+    if (coverage) {
+      for (const key of [
+        'census_row_count', 'resolved_count', 'unresolved_count', 'conflicting_count', 'coverage_rate',
+      ]) expectNumber(coverage[key], `identity_coverage.${key}`, errors);
+      for (const key of ['unresolved_population_row_ids', 'conflicting_population_row_ids']) {
+        expectArray(coverage[key], `identity_coverage.${key}`, errors, expectStringItem);
+      }
+    }
+
+    const counts = expectRecord(document.status_counts, 'status_counts', errors);
+    if (counts) {
+      for (const status of WEEKLY_FORECAST_STATUSES) {
+        expectNumber(counts[status], `status_counts.${status}`, errors);
+      }
+    }
+
+    const lifecycle = expectRecord(document.lifecycle, 'lifecycle', errors);
+    if (lifecycle) {
+      expectString(lifecycle.state, 'lifecycle.state', errors);
+      expectString(lifecycle.consumer_eligibility, 'lifecycle.consumer_eligibility', errors);
+      expectBoolean(lifecycle.admission_requires_receipt, 'lifecycle.admission_requires_receipt', errors);
+    }
+
+    const reliability = expectRecord(document.reliability_tracking, 'reliability_tracking', errors);
+    if (reliability) {
+      for (const key of ['truth_label_owner', 'truth_label_artifact_kind', 'forge_role']) {
+        expectString(reliability[key], `reliability_tracking.${key}`, errors);
+      }
+      if (reliability.truth_label_ref !== null) {
+        parseEvidenceRefShape(reliability.truth_label_ref, 'reliability_tracking.truth_label_ref', errors);
+      }
+      expectBoolean(reliability.forge_is_truth_label, 'reliability_tracking.forge_is_truth_label', errors);
+      expectString(reliability.scored_at, 'reliability_tracking.scored_at', errors, true);
+    }
+
+    const boundary = expectRecord(document.seasonal_candidate_boundary, 'seasonal_candidate_boundary', errors);
+    if (boundary) {
+      for (const key of ['seasonal_candidate_run_id', 'relationship', 'note']) {
+        expectString(boundary[key], `seasonal_candidate_boundary.${key}`, errors);
+      }
+      for (const key of [
+        'may_relabel_seasonal_candidate', 'may_promote_seasonal_candidate',
+        'may_consume_seasonal_candidate',
+      ]) expectBoolean(boundary[key], `seasonal_candidate_boundary.${key}`, errors);
+    }
+
+    expectArray(document.outputs, 'outputs', errors, parseContentRefShape);
+    const digests = expectRecord(document.digests, 'digests', errors);
+    if (digests) {
+      expectString(digests.player_rows_sha256, 'digests.player_rows_sha256', errors);
+      const serialization = expectRecord(digests.serialization, 'digests.serialization', errors);
+      if (serialization) {
+        expectString(serialization.serializer_id, 'digests.serialization.serializer_id', errors);
+        expectString(serialization.serializer_version, 'digests.serialization.serializer_version', errors);
+      }
+    }
+    expectArray(document.limitations, 'limitations', errors, expectStringItem);
+    // Establish canonical-serialization safety as part of parsing. This also
+    // rejects cycles, accessors, exotic prototypes, undefined values, and
+    // non-finite values hidden in otherwise-unused fields before admission.
+    canonicalForwardJsonSha256(document);
+  } catch (error) {
+    malformed(errors, '', `Document could not be inspected safely: ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value: input as WeeklyForecastPublicationManifest };
+}
+
+/** Structural parse of an untrusted rows document. Never throws. */
+export function parseWeeklyPlayerRows(
+  input: unknown,
+): WeeklyParseResult<readonly WeeklyPlayerRow[]> {
+  const errors: WeeklyValidationIssue[] = [];
+  try {
+    expectArray(input, '', errors, (value, path, rowErrors) => {
+      const row = expectRecord(value, path, rowErrors);
+      if (!row) return;
+      expectString(row.population_row_id, `${path}.population_row_id`, rowErrors);
+      expectString(row.forecast_status, `${path}.forecast_status`, rowErrors);
+      if (
+        typeof row.forecast_status === 'string' &&
+        !(WEEKLY_FORECAST_STATUSES as readonly string[]).includes(row.forecast_status)
+      ) malformed(rowErrors, `${path}.forecast_status`, 'Unknown forecast_status.');
+      parseIdentityShape(row.identity, `${path}.identity`, rowErrors);
+      parseUncertaintyShape(row.uncertainty, `${path}.uncertainty`, rowErrors);
+      expectArray(row.input_ids_used, `${path}.input_ids_used`, rowErrors, expectStringItem);
+      if (row.point_forecast !== null) expectNumber(row.point_forecast, `${path}.point_forecast`, rowErrors);
+      if (row.rank !== null) expectNumber(row.rank, `${path}.rank`, rowErrors);
+      if (row.actual_outcome !== null) malformed(rowErrors, `${path}.actual_outcome`, 'Expected null before the target week.');
+      if (row.forecast_status === 'forecast_available') {
+        // The type says `status_reasons?: never`, but the parser skipped the
+        // field entirely for available rows, so malformed or contradictory
+        // reason data rode through untouched — and a consumer reading the JSON
+        // directly sees an available forecast carrying failure reasons.
+        if (row.status_reasons !== undefined) {
+          malformed(rowErrors, `${path}.status_reasons`,
+            'An available row may not carry status reasons.');
+        }
+      } else {
+        expectArray(row.status_reasons, `${path}.status_reasons`, rowErrors, (item, itemPath, itemErrors) => {
+          const reason = expectRecord(item, itemPath, itemErrors);
+          if (!reason) return;
+          expectString(reason.dimension, `${itemPath}.dimension`, itemErrors);
+          expectString(reason.code, `${itemPath}.code`, itemErrors);
+          if (reason.input_id !== null) expectString(reason.input_id, `${itemPath}.input_id`, itemErrors);
+        });
+      }
+    });
+    canonicalForwardJsonSha256(input);
+  } catch (error) {
+    malformed(errors, '', `Rows could not be inspected safely: ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value: input as readonly WeeklyPlayerRow[] };
+}
+
+/** Structural parse of an untrusted admission receipt. Never throws. */
+export function parseWeeklyAdmissionReceipt(
+  input: unknown,
+): WeeklyParseResult<WeeklyAdmissionReceipt> {
+  const errors: WeeklyValidationIssue[] = [];
+  try {
+    const receipt = expectRecord(input, '', errors);
+    if (!receipt) return { ok: false, errors };
+    if (receipt.artifact_type !== WEEKLY_ADMISSION_RECEIPT_ARTIFACT_TYPE) {
+      errors.push(issue('wrong_artifact_type', 'artifact_type', 'Unexpected receipt artifact_type.'));
+    }
+    if (receipt.artifact_version !== WEEKLY_ADMISSION_RECEIPT_ARTIFACT_VERSION) {
+      errors.push(issue('wrong_artifact_version', 'artifact_version', 'Unexpected receipt artifact_version.'));
+    }
+    for (const key of [
+      'artifact_type', 'artifact_version', 'document_kind', 'publication_id',
+      'manifest_sha256', 'player_rows_sha256', 'authority_id',
+      'authority_repository', 'decided_by', 'decided_at', 'admission_path',
+      'consumer_eligibility',
+    ]) expectString(receipt[key], key, errors);
+    expectBoolean(receipt.in_season_gate_weakened, 'in_season_gate_weakened', errors);
+    const decisionRef = expectRecord(receipt.decision_ref, 'decision_ref', errors);
+    if (decisionRef) {
+      if (decisionRef.input_id !== null) malformed(errors, 'decision_ref.input_id', 'Expected null.');
+      expectString(decisionRef.uri_or_path, 'decision_ref.uri_or_path', errors);
+      expectString(decisionRef.content_sha256, 'decision_ref.content_sha256', errors);
+      expectString(decisionRef.record_id, 'decision_ref.record_id', errors);
+    }
+    expectArray(receipt.limitations, 'limitations', errors, expectStringItem);
+    canonicalForwardJsonSha256(receipt);
+  } catch (error) {
+    malformed(errors, '', `Receipt could not be inspected safely: ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value: input as WeeklyAdmissionReceipt };
+}
+
+// ---------------------------------------------------------------------------
+// Verification context
+// ---------------------------------------------------------------------------
+
+/**
+ * Evidence a validator cannot derive from the documents alone.
+ *
+ * Without a census context, exact one-to-one membership is **unproven** — a
+ * census reference plus a self-declared `one_to_one_complete: true` is a claim,
+ * not evidence. `validateWeeklyPublication` reports that as
+ * `census_membership_unverified` and the consumer refuses admission.
+ */
+export interface WeeklyVerificationContext {
+  /**
+   * The census the consumer **expects**, independent of the document.
+   *
+   * Pinning the owner string and then checking that the semantics ref, source
+   * path, digest and population agree with values the manifest selected proves
+   * only internal consistency: a publisher holding both sides can name
+   * TIBER-Data while choosing an arbitrary semantics ref, source path, digest
+   * and population, echo them through the context, and pass. Equality with
+   * publisher-selected values is not provenance.
+   *
+   * This is the trust anchor, exactly as `admission_authority` is for receipts:
+   * it must come from deployed configuration or a separately governed artifact,
+   * never from the publication being tested. Admission fails closed without it.
+   */
+  /**
+   * Consumer-owned expected identity for EVERY admitted input class, keyed by
+   * class name. Required and optional classes alike — an admitted class with no
+   * pin is refused.
+   *
+   * Verifying the exact bytes the publisher selected proves only that those
+   * bytes are what they claim, not that they are the source that SHOULD have
+   * been used. Where several eligible TIBER-Data artifacts, versions or subsets
+   * exist, a publisher can pick an incomplete one, have it truthfully verified,
+   * and mark the omitted players `unavailable_missing_required_inputs` — every
+   * membership check passes because the membership genuinely lacks them.
+   *
+   * Optional classes are pinned too: depth-chart, schedule and availability
+   * inputs feed the model, so a stale but cutoff-eligible snapshot moves
+   * projections and ranks even though it cannot suppress a player.
+   */
+  expected_input_identities?: Readonly<Record<string, {
+    owner_repository: string;
+    owner_commit_sha: string;
+    artifact_type: string;
+    artifact_version: string;
+    uri_or_path: string;
+    content_sha256: string;
+  }>>;
+  /**
+   * Independently verified scoring reconciliation.
+   *
+   * The manifest otherwise declares its own `status: 'passed'`, repeats its own
+   * input hashes, and cites any syntactically valid reference — so forecasts
+   * could be labelled canonical generic full-PPR with no evidence the inputs
+   * were reconciled to that profile.
+   */
+  /**
+   * Independently verified model execution.
+   *
+   * Model identity is otherwise accepted on syntax alone: any well-formed
+   * commit, configuration, feature and fitted-model digest passes. Nothing
+   * establishes that the cited model actually produced these rows from the
+   * admitted inputs, so an authority receipt could admit arbitrary projections
+   * labelled `model-inference`.
+   */
+  verified_model_execution?: {
+    status: 'succeeded' | 'failed';
+    model_id: string;
+    model_version: string;
+    implementation_commit_sha: string;
+    implementation_commit_evidence_sha256: string;
+    configuration_sha256: string;
+    feature_configuration_sha256: string;
+    /**
+     * The COMPLETE fitted-model reference the run used.
+     *
+     * Binding only the digest left `artifact_type`, `artifact_version` and
+     * `uri_or_path` free, so a regenerated publication could record
+     * fitted-model provenance the execution never verified.
+     */
+    fitted_model_ref: {
+      artifact_type: string;
+      artifact_version: string;
+      uri_or_path: string;
+      content_sha256: string;
+    };
+    /**
+     * input_id → the content digest the run consumed under that id.
+     *
+     * A deduplicated hash SET cannot express this: where two admitted inputs
+     * share a digest it collapses them, so a run consuming one logical source
+     * passes as having consumed both — and it can never show that a digest was
+     * consumed under the RIGHT id, so a misassigned feature source is invisible.
+     */
+    input_digests_by_input_id: Readonly<Record<string, string>>;
+    player_rows_sha256: string;
+  };
+  verified_scoring_reconciliation?: {
+    status: 'passed' | 'failed' | 'unavailable';
+    /** The validator that actually produced the verified result. */
+    validator_id: string;
+    validator_version: string;
+    /** The COMPLETE evidence reference, not its digest alone. */
+    evidence_ref: {
+      repository: string;
+      path: string;
+      artifact_version: string;
+      content_sha256: string;
+    };
+    scoring_profile_sha256: string;
+    /**
+     * The input digests the verified reconciliation artifact actually covers,
+     * read from that artifact.
+     *
+     * Without it, the admitted-hash comparison runs entirely on manifest-owned
+     * copies, so a genuine `passed` artifact covering input set A can be cited
+     * while the manifest declares input set B.
+     *
+     * This remains load-bearing now that every admitted input class is
+     * consumer-pinned: the pins establish WHICH artifact was used, and this
+     * establishes that the reconciliation actually covers it.
+     *
+     * Carried as an input_id→digest MAP for the same reason
+     * `input_digests_by_input_id` is: a deduplicated hash set collapses two
+     * admitted inputs that share a digest, so a reconciliation covering one
+     * logical source passes as covering both, and the set can never show that a
+     * digest was covered under the id it was consumed under.
+     */
+    source_input_digests_by_input_id: Readonly<Record<string, string>>;
+  };
+  expected_census_identity?: {
+    /**
+     * Artifact type/version pin for the census reference. MANDATORY.
+     *
+     * Two revisions were needed to get this right. First it was two
+     * independently optional fields, which made a PARTIAL pin representable —
+     * and a partial pin is silently no pin. Grouping them removed that, but
+     * left the group itself optional, so omitting it skipped the comparison
+     * entirely and a publisher could relabel the census artifact type or
+     * version against the same governed digest. An optional pin is no pin.
+     */
+    census_artifact_ref: {
+      artifact_type: string;
+      artifact_version: string;
+    };
+    owner_repository: string;
+    semantics_ref: string;
+    source_uri_or_path: string;
+    census_sha256: string;
+  };
+  /**
+   * The census the consumer actually loaded and verified, including the
+   * canonical identity each population row maps to.
+   *
+   * `population_row_ids` alone cannot show that a row's `canonical_player_id`
+   * belongs to the census record it cites: swapping one row's canonical id for
+   * another's while keeping its own valid record id and digest satisfies every
+   * per-field check. The mapping is therefore carried here and compared.
+   */
+  census?: {
+    census_sha256: string;
+    population_row_ids: readonly string[];
+    owner_repository: string;
+    semantics_ref: string;
+    source_uri_or_path: string;
+    /** population_row_id → the canonical player id the governed census assigns. */
+    canonical_player_ids_by_row_id?: Readonly<Record<string, string | null>>;
+    /**
+     * population_row_id → the cutoff-bound position the governed census assigns,
+     * or null where the census itself records it as unknown.
+     *
+     * Position decides both admissibility (`WEEKLY_SUPPORTED_POSITIONS`) and the
+     * `unsupported_position_domain` status, so leaving it publisher-declared let
+     * a resolved row be relabelled `K` and suppressed on assertion alone.
+     */
+    positions_by_row_id?: Readonly<Record<string, string | null>>;
+    /**
+     * population_row_id → the NFL team abbreviation the governed census assigns,
+     * or null where the census itself records none.
+     *
+     * Published on every admitted row and used by consumers to display and group
+     * players, but bound to nothing: a verified execution digest proves the run
+     * emitted the value, not that the value matches the governed source. Stale
+     * or wrong team metadata therefore passed admission intact.
+     *
+     * This is the team IDENTITY the census carries, which the forward-artifact
+     * contract keeps deliberately separate from assignment STATE
+     * (`team_assignment_status`, roster-input evidence). Binding it here does not
+     * make `roster_state_unresolved` admissible — that still needs the roster
+     * record's own status, which this contract does not carry.
+     */
+    team_abbrs_by_row_id?: Readonly<Record<string, string | null>>;
+    /**
+     * population_row_id → the display name the governed census assigns.
+     *
+     * Not named in the finding that prompted the team binding, but the identical
+     * defect one field over: "display only" is precisely what a consumer shows a
+     * user, so an unbound value relabels a governed player under a name the
+     * census never assigned.
+     */
+    display_names_by_row_id?: Readonly<Record<string, string>>;
+    /**
+     * population_row_id → the identity state the governed census records.
+     *
+     * `canonical_player_ids_by_row_id` cannot distinguish `unresolved` from
+     * `conflicting`: both map to a null canonical id, so relabelling one as the
+     * other was invisible and the correspondence check compared two
+     * publisher-controlled fields to each other.
+     */
+    identity_states_by_row_id?: Readonly<Record<string, WeeklyIdentityStatus>>;
+    /**
+     * population_row_id → the eligibility decision the governed census records.
+     *
+     * The census is deliberately broad (§3.6: it "must include supported,
+     * unsupported, eligible, ineligible, and unresolved records"), so
+     * membership carries no eligibility information in either direction. That
+     * cuts both ways, and only one direction was covered: refusing
+     * `population_ineligible` on assertion alone stopped an ineligible LABEL
+     * from suppressing a player, but nothing stopped an ineligible PLAYER from
+     * being labelled `forecast_available` and ranked. Required-input membership
+     * and a genuine model execution can both exist for a retired or
+     * roster-inactive census row.
+     *
+     * This is the evidence that decides the question, so it also makes
+     * `population_ineligible` admission-capable again — bound to a verified
+     * decision rather than to an assertion.
+     */
+    eligibility_states_by_row_id?: Readonly<Record<string, WeeklyCensusEligibilityState>>;
+    /**
+     * The effective instant read from the exact census bytes.
+     *
+     * The manifest duplicates this value, and the duplicate is what the cutoff
+     * comparison used to read — so a census produced after the cutoff could be
+     * pinned while the manifest backdated its copy, admitting post-cutoff
+     * membership, identities and positions.
+     */
+    effective_at?: string;
+    /**
+     * The population scope read from the exact census bytes.
+     *
+     * The manifest declares `scope_definition` — who the census enumerates —
+     * and every provenance check around it compared owner, semantics ref,
+     * digest and source URI, none of which change when the scope sentence does.
+     * A publication could therefore describe the verified population under a
+     * scope the census never stated, which is the one field a reader uses to
+     * know WHO was supposed to be in the rankings.
+     */
+    scope_definition?: string;
+  };
+  /**
+   * Verification results produced from the exact source bytes. An input id by
+   * itself is not evidence: every load-bearing identity, digest, timestamp and
+   * count is rebound here and compared fail-closed.
+   */
+  record_level_input_evidence?: readonly WeeklyRecordLevelInputEvidence[];
+  /**
+   * Consumer-owned trust anchor. It must come from deployed configuration or a
+   * separately governed binding artifact, never from the receipt being tested.
+   */
+  admission_authority?: WeeklyTrustedAdmissionBinding;
+}
+
+export interface WeeklyRecordLevelInputEvidence {
+  input_id: string;
+  input_content_sha256: string;
+  owner_repository: string;
+  owner_commit_sha: string;
+  verified_forecast_cutoff: string;
+  verified_source_as_of: string;
+  max_record_effective_at: string;
+  /**
+   * The publication instant read from the artifact itself, for input classes
+   * whose `source_timestamp_locator` is `artifact.published_at`.
+   *
+   * Required to exempt such a class's records from the cutoff comparison.
+   * `verified_source_as_of` cannot stand in: §2 of the forward-artifact
+   * contract defines `source_as_of` as the fact's domain time, states that it
+   * "is not proof that the fact was knowable then", and forbids renaming it
+   * into availability proof.
+   */
+  verified_artifact_published_at?: string;
+  record_count_eligible: number;
+  record_count_post_cutoff: number;
+  record_count_unresolved: number;
+  /**
+   * The population rows this input actually holds an eligible record for,
+   * derived by the consumer from the exact source bytes.
+   *
+   * Aggregate counts cannot answer a per-player question. Without this, an
+   * input carrying one eligible record satisfies every count check while two
+   * available rows each self-declare that they used it — and rankings are
+   * produced for players the verified source says nothing about.
+   */
+  eligible_population_row_ids: readonly string[];
+  verification_artifact_ref: WeeklyContentRef;
+}
+
+export interface WeeklyTrustedAdmissionBinding {
+  receipt_sha256: string;
+  authority_id: string;
+  authority_repository: string;
+  decision_ref_uri_or_path: string;
+  decision_ref_content_sha256: string;
+  decision_ref_record_id: string;
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+export interface WeeklyValidationResult {
+  validator_id: 'tiber-weekly-forecast-publication-validator';
+  validator_version: '3.0.0';
+  valid: boolean;
+  promotion_authority: false;
+  /** True when the document is a schema example rather than a real publication. */
+  is_schema_example: boolean;
+  errors: readonly WeeklyValidationIssue[];
+}
+
+function collectStrings(value: unknown, out: string[], depth = 0): void {
+  if (depth > 12) return;
+  if (typeof value === 'string') { out.push(value); return; }
+  if (Array.isArray(value)) { for (const item of value) collectStrings(item, out, depth + 1); return; }
+  if (isRecord(value)) { for (const item of Object.values(value)) collectStrings(item, out, depth + 1); }
+}
+
+function isCanonicalUtc(value: unknown): value is string {
+  if (typeof value !== 'string' || !WEEKLY_UTC_INSTANT_PATTERN.test(value)) return false;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return false;
+  // The regex admits impossible calendar dates that `Date` silently rolls over
+  // (`2026-09-31T00:00:00.000Z` becomes October 1 rather than NaN). Without a
+  // round trip, every downstream cutoff comparison would use an instant other
+  // than the one written in the artifact.
+  return parsed.toISOString() === value;
+}
+
+/**
+ * Full semantic validation.
+ *
+ * Recomputes everything it can from the supplied rows rather than trusting the
+ * manifest's own summary fields.
+ */
+export function validateWeeklyPublication(
+  manifest: WeeklyForecastPublicationManifest,
+  rows: readonly WeeklyPlayerRow[],
+  context: WeeklyVerificationContext = {},
+): WeeklyValidationResult {
+  const errors: WeeklyValidationIssue[] = [];
+  const fail = (code: WeeklyValidationErrorCode, path: string, message: string) =>
+    errors.push(issue(code, path, message));
+
+  const isExample = manifest.artifact_version === WEEKLY_PUBLICATION_SCHEMA_EXAMPLE_VERSION;
+
+  // --- document identity --------------------------------------------------
+  if (
+    manifest.artifact_type !== WEEKLY_PUBLICATION_ARTIFACT_TYPE ||
+    (manifest.artifact_version !== WEEKLY_PUBLICATION_ARTIFACT_VERSION && !isExample) ||
+    manifest.document_kind !== 'weekly_publication_manifest' ||
+    manifest.output_kind !== WEEKLY_OUTPUT_KIND ||
+    manifest.cutoff_rule !== WEEKLY_CUTOFF_RULE
+  ) {
+    fail('manifest_identity_invalid', '', 'Manifest identity, output kind, or cutoff rule is not canonical.');
+  }
+
+  // --- target -------------------------------------------------------------
+  const target = manifest.target;
+  if (target?.target_kind !== 'single_scoring_week') {
+    fail('target_not_single_week', 'target.target_kind', 'Target must be a single scoring week.');
+  }
+  if (target?.is_seasonal_total !== false) {
+    fail('target_is_seasonal_total', 'target.is_seasonal_total', 'A seasonal total may not be published as weekly output.');
+  }
+  if (
+    target?.target_season !== WEEKLY_TARGET_SEASON ||
+    target?.target_week !== WEEKLY_TARGET_WEEK
+  ) {
+    fail('target_field_invalid', 'target',
+      `This contract is scoped to ${WEEKLY_TARGET_SEASON} Week ${WEEKLY_TARGET_WEEK}.`);
+  }
+  if (target?.rank_basis !== WEEKLY_RANK_BASIS) {
+    fail('target_field_invalid', 'target.rank_basis', 'Unexpected rank_basis.');
+  }
+  if (target?.rank_ordering_rule !== WEEKLY_RANK_ORDERING_RULE) {
+    fail('target_field_invalid', 'target.rank_ordering_rule', 'Unexpected rank_ordering_rule.');
+  }
+  if (
+    target?.scoring_profile_id !== WEEKLY_SCORING_PROFILE_ID ||
+    target?.league_specific !== false ||
+    canonicalForwardJsonSha256(target?.supported_positions) !==
+      canonicalForwardJsonSha256(WEEKLY_SUPPORTED_POSITIONS) ||
+    canonicalForwardJsonSha256(target?.unsupported_domain) !==
+      canonicalForwardJsonSha256(['IDP'])
+  ) {
+    fail('target_field_invalid', 'target', 'Scoring profile, position domain, or league scope is not canonical.');
+  }
+
+  // --- timestamps ---------------------------------------------------------
+  if (!manifest.forecast_cutoff) fail('cutoff_missing', 'forecast_cutoff', 'forecast_cutoff is required.');
+  else if (!isCanonicalUtc(manifest.forecast_cutoff)) {
+    fail('cutoff_not_canonical_utc', 'forecast_cutoff', 'forecast_cutoff must be a canonical UTC instant.');
+  }
+  if (!manifest.generated_at) fail('generated_at_missing', 'generated_at', 'generated_at is required.');
+  else if (!isCanonicalUtc(manifest.generated_at)) {
+    fail('generated_at_not_canonical_utc', 'generated_at', 'generated_at must be a canonical UTC instant.');
+  }
+  if (isCanonicalUtc(manifest.forecast_cutoff) && isCanonicalUtc(manifest.generated_at)) {
+    if (new Date(manifest.generated_at).getTime() < new Date(manifest.forecast_cutoff).getTime()) {
+      fail('generated_at_before_cutoff', 'generated_at', 'generated_at must be at or after forecast_cutoff.');
+    }
+  }
+  // Both timestamps are capped at the contract-owned pre-kickoff deadline.
+  // `generated_at >= forecast_cutoff` alone lets a document slide the whole
+  // window into the regular season while keeping every input-class label legal.
+  const preKickoffMs = new Date(WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC).getTime();
+  if (
+    isCanonicalUtc(manifest.forecast_cutoff) &&
+    new Date(manifest.forecast_cutoff).getTime() > preKickoffMs
+  ) {
+    fail('cutoff_after_prekickoff_deadline', 'forecast_cutoff',
+      `forecast_cutoff must be at or before the Week 1 pre-kickoff deadline (${WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC}).`);
+  }
+  if (
+    isCanonicalUtc(manifest.generated_at) &&
+    new Date(manifest.generated_at).getTime() > preKickoffMs
+  ) {
+    fail('generated_at_after_prekickoff_deadline', 'generated_at',
+      `generated_at must be at or before the Week 1 pre-kickoff deadline (${WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC}).`);
+  }
+
+  // --- canonical policy cannot be weakened by the document -----------------
+  const declaredRules = manifest.preseason_input_class_rules ?? [];
+  const canonicalRuleJson = canonicalForwardJsonSha256(WEEKLY_CANONICAL_INPUT_CLASS_RULES);
+  if (canonicalForwardJsonSha256(declaredRules) !== canonicalRuleJson) {
+    fail('policy_input_rules_altered', 'preseason_input_class_rules',
+      'Declared input-class rules differ from the canonical policy.');
+  }
+  const declaredProhibited = manifest.prohibited_input_classes ?? [];
+  if (
+    canonicalForwardJsonSha256(declaredProhibited) !==
+    canonicalForwardJsonSha256(WEEKLY_PROHIBITED_PRESEASON_INPUT_CLASSES)
+  ) {
+    fail('policy_prohibited_list_altered', 'prohibited_input_classes',
+      'Declared prohibited-input list differs from the canonical policy.');
+  }
+  if (
+    canonicalForwardJsonSha256(manifest.seasonal_candidate_boundary) !==
+    canonicalForwardJsonSha256(WEEKLY_SEASONAL_CANDIDATE_BOUNDARY)
+  ) {
+    fail('policy_seasonal_boundary_altered', 'seasonal_candidate_boundary',
+      'Declared seasonal-candidate boundary differs from the canonical policy.');
+  }
+
+  // --- scoring/model contracts -------------------------------------------
+  const {
+    profile_sha256: declaredProfileSha,
+    source_reconciliation: sourceReconciliation,
+    ...declaredProfileDefinition
+  } = manifest.scoring_profile;
+  if (
+    canonicalForwardJsonSha256(declaredProfileDefinition) !==
+      canonicalForwardJsonSha256(TIBER_GENERIC_FULL_PPR_V1) ||
+    declaredProfileSha !== TIBER_GENERIC_FULL_PPR_V1_SHA256 ||
+    manifest.scoring_profile.profile_id !== TIBER_GENERIC_FULL_PPR_V1_PROFILE_ID ||
+    manifest.scoring_profile.profile_version !== TIBER_GENERIC_FULL_PPR_V1_PROFILE_VERSION
+  ) {
+    fail('scoring_profile_mismatch', 'scoring_profile',
+      'Scoring profile must exactly match the canonical generic full-PPR definition and digest.');
+  }
+
+  // Admitted inputs as an id→digest MAP. Both the reconciliation and the model
+  // execution bind against this rather than a deduplicated hash set: the set
+  // collapses two inputs that legitimately share a digest, and can never show
+  // that a digest was covered under the RIGHT id.
+  const admittedInputDigestsByInputId = Object.fromEntries(
+    (manifest.artifact_inputs ?? []).map((i) => [i.input_id, i.content_sha256]),
+  );
+
+  const inputHashes = (manifest.artifact_inputs ?? [])
+    .map((input) => input.content_sha256)
+    .sort(compareForwardCanonicalStrings);
+  const canonicalInputHashes = [...new Set(inputHashes)];
+  const reconciliationHashes = [...(sourceReconciliation?.source_input_sha256s ?? [])]
+    .sort(compareForwardCanonicalStrings);
+  const canonicalReconciliationHashes = [...new Set(reconciliationHashes)];
+  const reconciliationEvidence = sourceReconciliation?.evidence_ref;
+  if (
+    (!isExample && sourceReconciliation?.status !== 'passed') ||
+    (isExample && !['passed', 'unavailable'].includes(sourceReconciliation?.status)) ||
+    sourceReconciliation?.scoring_profile_sha256 !== TIBER_GENERIC_FULL_PPR_V1_SHA256 ||
+    canonicalForwardJsonSha256(sourceReconciliation?.source_input_sha256s ?? []) !==
+      canonicalForwardJsonSha256(canonicalReconciliationHashes) ||
+    canonicalForwardJsonSha256(canonicalReconciliationHashes) !==
+      canonicalForwardJsonSha256(canonicalInputHashes) ||
+    !sourceReconciliation?.validator_id ||
+    !sourceReconciliation?.validator_version ||
+    !reconciliationEvidence?.repository ||
+    !reconciliationEvidence?.path ||
+    !reconciliationEvidence?.artifact_version ||
+    !WEEKLY_SHA256_PATTERN.test(reconciliationEvidence?.content_sha256 ?? '')
+  ) {
+    fail('scoring_reconciliation_invalid', 'scoring_profile.source_reconciliation',
+      'Scoring reconciliation must bind the canonical profile and every exact admitted input hash.');
+  }
+  // The manifest declaring its own reconciliation `passed` is self-certification:
+  // it repeats its own input hashes and cites any syntactically valid reference.
+  // A real publication must carry the verified result and the exact evidence
+  // digest through the trusted context.
+  if (!isExample) {
+    const verifiedReconciliation = context.verified_scoring_reconciliation;
+    if (!verifiedReconciliation) {
+      fail('scoring_reconciliation_invalid', 'verification_context.verified_scoring_reconciliation',
+        'Admission requires independently verified scoring reconciliation; the manifest cannot ' +
+        'certify its own.');
+    } else if (
+      verifiedReconciliation.status !== 'passed' ||
+      // Validator identity too: attributing a verified result to a validator
+      // and version that never produced it is provenance nothing checked.
+      verifiedReconciliation.validator_id !== sourceReconciliation?.validator_id ||
+      verifiedReconciliation.validator_version !== sourceReconciliation?.validator_version ||
+      canonicalForwardJsonSha256(verifiedReconciliation.evidence_ref ?? null) !==
+        canonicalForwardJsonSha256(reconciliationEvidence ?? null) ||
+      verifiedReconciliation.scoring_profile_sha256 !== TIBER_GENERIC_FULL_PPR_V1_SHA256
+    ) {
+      fail('scoring_reconciliation_invalid', 'verification_context.verified_scoring_reconciliation',
+        'Verified scoring reconciliation must report passed, bind the exact evidence digest the ' +
+        'manifest cites, and reconcile to the canonical scoring profile.');
+    } else if (
+      // The coverage comparison above runs on manifest-owned copies on both
+      // sides. Comparing what the VERIFIED artifact actually covers with the
+      // admitted inputs is what stops a genuine `passed` reconciliation for one
+      // input set being cited for another.
+      //
+      // Compared as an id→digest MAP, for the same reason the execution binding
+      // is: a deduplicated hash set collapses two admitted inputs that share a
+      // digest, so a reconciliation covering one logical source passed as
+      // covering both, and it could never show that a digest was covered under
+      // the right id.
+      canonicalForwardJsonSha256(verifiedReconciliation.source_input_digests_by_input_id ?? {}) !==
+        canonicalForwardJsonSha256(admittedInputDigestsByInputId)
+    ) {
+      fail('scoring_reconciliation_invalid', 'verification_context.verified_scoring_reconciliation',
+        'The verified reconciliation does not cover exactly the admitted inputs, each under the ' +
+        'input id the publication declares.');
+    }
+  }
+
+  const model = manifest.model;
+  if (
+    !model?.model_id ||
+    !model?.model_version ||
+    model?.implementation_repository !== WEEKLY_FORECAST_REPOSITORY ||
+    !WEEKLY_COMMIT_SHA_PATTERN.test(model?.implementation_commit_sha ?? '') ||
+    !WEEKLY_SHA256_PATTERN.test(model?.implementation_commit_evidence_sha256 ?? '') ||
+    !WEEKLY_SHA256_PATTERN.test(model?.configuration_sha256 ?? '') ||
+    !WEEKLY_SHA256_PATTERN.test(model?.feature_configuration_sha256 ?? '') ||
+    (!isExample && model?.fitted_model_ref === null)
+  ) {
+    fail('model_identity_invalid', 'model',
+      'Model identity must bind Forecast implementation code, configuration, features, and a real fitted model artifact.');
+  }
+  if (model?.fitted_model_ref && !WEEKLY_SHA256_PATTERN.test(model.fitted_model_ref.content_sha256)) {
+    fail('model_identity_invalid', 'model.fitted_model_ref.content_sha256',
+      'Fitted model reference must carry a lowercase SHA-256.');
+  }
+  // Model identity above is checked for SHAPE only: any well-formed commit and
+  // digest passes. Nothing there establishes that the cited model actually
+  // produced these rows from the admitted inputs, so a correctly pinned
+  // authority receipt could admit arbitrary projections labelled
+  // `model-inference`. A real publication must therefore carry an
+  // independently verified execution that binds the model, its configuration,
+  // the exact inputs, and the exact output rows.
+  if (!isExample) {
+    const run = context.verified_model_execution;
+    if (!run) {
+      fail('model_execution_unverified', 'verification_context.verified_model_execution',
+        'Admission requires an independently verified model execution; declared model identity ' +
+        'is shape, not evidence that these rows were produced by that model.');
+    } else if (
+      run.status !== 'succeeded' ||
+      // The FULL declared identity, not just the hashes. Leaving model_id,
+      // model_version and the commit evidence digest unbound let a publication
+      // relabel its lineage while an unchanged execution still validated,
+      // recording model provenance the run never verified.
+      run.model_id !== model?.model_id ||
+      run.model_version !== model?.model_version ||
+      run.implementation_commit_sha !== model?.implementation_commit_sha ||
+      run.implementation_commit_evidence_sha256 !== model?.implementation_commit_evidence_sha256 ||
+      run.configuration_sha256 !== model?.configuration_sha256 ||
+      run.feature_configuration_sha256 !== model?.feature_configuration_sha256 ||
+      canonicalForwardJsonSha256(run.fitted_model_ref ?? null) !==
+        canonicalForwardJsonSha256(model?.fitted_model_ref ?? null)
+    ) {
+      fail('model_execution_unverified', 'verification_context.verified_model_execution',
+        'The verified execution does not report success for the exact model identity, ' +
+        'configuration, features and fitted artifact this publication declares.');
+    } else if (
+      // Compared as an id→digest MAP, never as a deduplicated hash set: the set
+      // collapses inputs that share a digest, and cannot bind a digest to the
+      // id under which it was consumed.
+      canonicalForwardJsonSha256(run.input_digests_by_input_id ?? {}) !==
+        canonicalForwardJsonSha256(admittedInputDigestsByInputId)
+    ) {
+      fail('model_execution_unverified', 'verification_context.verified_model_execution',
+        'The verified execution did not consume exactly the admitted inputs, each under the ' +
+        'input id the publication declares.');
+    } else if (run.player_rows_sha256 !== manifest.digests?.player_rows_sha256) {
+      // The run must have produced THESE rows. Without this the execution could
+      // be genuine and the published rows still substituted afterwards.
+      fail('model_execution_unverified', 'verification_context.verified_model_execution',
+        'The verified execution did not produce the published player rows.');
+    }
+  }
+
+  // --- inputs -------------------------------------------------------------
+  const inputs = manifest.artifact_inputs ?? [];
+  const seenInputIds = new Set<string>();
+  const seenInputClasses = new Set<string>();
+  const cutoffMs = isCanonicalUtc(manifest.forecast_cutoff)
+    ? new Date(manifest.forecast_cutoff).getTime()
+    : null;
+  const verificationByInputId = new Map(
+    (context.record_level_input_evidence ?? []).map((evidence) => [evidence.input_id, evidence]),
+  );
+  if (verificationByInputId.size !== (context.record_level_input_evidence ?? []).length) {
+    fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
+      'Record-level verification evidence contains duplicate input ids.');
+  }
+
+  inputs.forEach((input, index) => {
+    const at = `artifact_inputs[${index}]`;
+    if (seenInputIds.has(input.input_id)) {
+      fail('duplicate_input_id', at, `Duplicate input_id "${input.input_id}".`);
+    }
+    seenInputIds.add(input.input_id);
+
+    if (seenInputClasses.has(input.input_class)) {
+      fail('duplicate_input_class', at, `Duplicate input_class "${input.input_class}".`);
+    }
+    seenInputClasses.add(input.input_class);
+
+    if ((WEEKLY_PROHIBITED_PRESEASON_INPUT_CLASSES as readonly string[]).includes(input.input_class)) {
+      fail('prohibited_input_class_admitted', at, `Input class ${input.input_class} is prohibited before kickoff.`);
+    }
+
+    const canonicalRule = WEEKLY_CANONICAL_INPUT_CLASS_RULES.find(
+      (rule) => rule.input_class === input.input_class,
+    );
+    if (!canonicalRule) {
+      fail('input_class_not_canonical', `${at}.input_class`,
+        `Input class "${input.input_class}" is not part of the canonical preseason policy.`);
+    } else if (
+      input.owner_repository !== canonicalRule.owner_repository ||
+      input.availability_rule_id !== canonicalRule.availability_rule_id ||
+      input.cutoff_evidence?.source_timestamp_locator !== canonicalRule.source_timestamp_locator ||
+      input.cutoff_evidence?.normalization_rule_id !== canonicalRule.normalization_rule_id
+    ) {
+      fail('input_rule_mismatch', at,
+        `Input "${input.input_id}" does not exactly implement its canonical owner/availability/locator/normalization rule.`);
+    }
+
+    // Local cutoff check — the producer's own status is not sufficient.
+    if (!isCanonicalUtc(input.source_as_of)) {
+      fail('input_source_as_of_invalid', `${at}.source_as_of`, 'source_as_of must be a canonical UTC instant.');
+    } else if (cutoffMs !== null && new Date(input.source_as_of).getTime() > cutoffMs) {
+      fail('input_post_cutoff', `${at}.source_as_of`,
+        `source_as_of ${input.source_as_of} is after forecast_cutoff ${manifest.forecast_cutoff}.`);
+    }
+
+    const evidence = input.cutoff_evidence;
+    if ([
+      evidence?.record_count_eligible,
+      evidence?.record_count_post_cutoff,
+      evidence?.record_count_unresolved,
+    ].some((count) => !Number.isInteger(count) || (count as number) < 0)) {
+      fail('input_cutoff_unresolved', `${at}.cutoff_evidence`,
+        'Record counts must be non-negative integers.');
+    }
+    if (canonicalRule?.required && (evidence?.record_count_eligible ?? 0) < 1) {
+      fail('input_cutoff_unresolved', `${at}.cutoff_evidence.record_count_eligible`,
+        'A required input must have at least one record verified eligible at the cutoff.');
+    }
+    // Which timestamp governs eligibility is a property of the input CLASS, not
+    // a constant. `source_timestamp_locator` says so explicitly, and this used
+    // to compare record times for every class regardless — which rejected a
+    // perfectly governed pre-cutoff schedule, whose records ARE future events by
+    // construction: a schedule published in May lists September games.
+    //
+    // But the exemption must be EARNED, not assumed. The first version of this
+    // rested on `source_as_of <= cutoff`, which proves nothing here: §2 of the
+    // forward-artifact contract defines `source_as_of` as the fact's DOMAIN
+    // time and says outright that it "is not proof that the fact was knowable
+    // then", and that "a semantic `source_as_of` ... is never silently renamed
+    // into availability proof". A schedule genuinely published after the cutoff
+    // could declare a pre-cutoff domain time and, under that version, have its
+    // post-cutoff records exempted — leakage introduced by the fix.
+    //
+    // So the exemption applies only when the consumer supplies an independently
+    // verified publication instant that is itself at or before the cutoff.
+    // Absent that, the class is refused AND the strict record comparison still
+    // applies: no proof, no exemption.
+    //
+    // Narrow by design. For `artifact.source_as_of` (the prior-season classes)
+    // the records are historical facts, so a post-cutoff record is real leakage
+    // and the guard stays regardless.
+    const publishedAtGoverned = canonicalRule?.source_timestamp_locator === 'artifact.published_at';
+    const verifiedPublishedAt =
+      verificationByInputId.get(input.input_id)?.verified_artifact_published_at;
+    const publicationProven =
+      publishedAtGoverned &&
+      isCanonicalUtc(verifiedPublishedAt) &&
+      cutoffMs !== null &&
+      new Date(verifiedPublishedAt as string).getTime() <= cutoffMs;
+    // A schema example that honestly says it carries no source-byte verification
+    // cannot supply this proof either, and demanding it would force the example
+    // to fabricate one — the opposite of what the honest-`unverified` path below
+    // exists for. Examples are categorically non-admissible by artifact version,
+    // so nothing is waved through: `admitWeeklyPublication` refuses them outright.
+    const publicationExemptAsExample =
+      publishedAtGoverned &&
+      isExample &&
+      evidence?.record_level_verification === 'unverified_requires_source_bytes';
+    if (publishedAtGoverned && !publicationProven && !publicationExemptAsExample) {
+      fail('input_publication_time_unverified', `${at}.cutoff_evidence`,
+        `Input class "${input.input_class}" is governed by artifact.published_at, so admission ` +
+        'requires an independently verified publication instant at or before the forecast ' +
+        'cutoff. `source_as_of` is domain time and cannot stand in for it.');
+    }
+    const recordTimesGovern = !publicationProven && !publicationExemptAsExample;
+    if (recordTimesGovern && evidence?.record_count_post_cutoff > 0) {
+      fail('input_post_cutoff', `${at}.cutoff_evidence`, 'Input admits records after the declared cutoff.');
+    }
+    if (evidence?.record_count_unresolved > 0 || evidence?.self_reported_status === 'unresolved') {
+      fail('input_cutoff_unresolved', `${at}.cutoff_evidence`, 'Input has unresolved availability evidence.');
+    }
+    if (!['eligible', 'ineligible_after_cutoff', 'unresolved'].includes(
+      evidence?.self_reported_status,
+    )) {
+      fail('input_cutoff_unresolved', `${at}.cutoff_evidence.self_reported_status`,
+        'Unknown producer cutoff status.');
+    }
+    if (evidence?.self_reported_status === 'ineligible_after_cutoff') {
+      fail('input_post_cutoff', `${at}.cutoff_evidence`, 'Producer reports the input ineligible after cutoff.');
+    }
+    // Unverified is never admission-capable. A `locally_verified` declaration
+    // is accepted only when structured evidence rebinds every load-bearing
+    // field and proves the exact source bytes stayed within the cutoff.
+    const verification = verificationByInputId.get(input.input_id);
+    if (isExample && evidence?.record_level_verification === 'unverified_requires_source_bytes') {
+      // Schema examples are structurally reviewable but categorically
+      // non-admissible by artifact version. Do not fabricate source-byte
+      // verification merely to make an example validator-clean.
+    } else if (evidence?.record_level_verification !== 'locally_verified' || !verification) {
+      fail('input_cutoff_unverified', `${at}.cutoff_evidence.record_level_verification`,
+        'Admission requires structured record-level evidence for the exact source bytes.');
+    } else {
+      const verificationArtifact = verification.verification_artifact_ref;
+      const countsMatch =
+        verification.record_count_eligible === evidence.record_count_eligible &&
+        verification.record_count_post_cutoff === evidence.record_count_post_cutoff &&
+        verification.record_count_unresolved === evidence.record_count_unresolved;
+      const identityMatches =
+        verification.input_content_sha256 === input.content_sha256 &&
+        verification.owner_repository === input.owner_repository &&
+        verification.owner_commit_sha === input.owner_commit_sha &&
+        verification.verified_forecast_cutoff === manifest.forecast_cutoff &&
+        verification.verified_source_as_of === input.source_as_of;
+      if (!countsMatch || !identityMatches) {
+        fail('input_verification_binding_mismatch', `${at}.cutoff_evidence`,
+          'Record-level evidence does not bind the exact input bytes, owner commit, cutoff, source timestamp, and counts.');
+      }
+      // Verifying the publisher's chosen bytes proves those bytes are what they
+      // claim — not that they are the source that SHOULD have been used. With
+      // several eligible artifacts, versions or subsets available, an incomplete
+      // one can be selected, truthfully verified, and the omitted players marked
+      // `unavailable_missing_required_inputs`; every membership check passes
+      // because the membership genuinely lacks them. Only a consumer-owned pin
+      // closes that, exactly as `expected_census_identity` does for the census.
+      // EVERY admitted input is pinned, not only the required classes.
+      //
+      // An earlier revision exempted optional classes on the grounds that they
+      // cannot justify an unavailable status. That was true and beside the
+      // point: depth chart, schedule and availability inputs feed the model, so
+      // a stale or incomplete cutoff-eligible snapshot -- truthfully verified
+      // byte-for-byte -- still moves projections and ranks. Inability to
+      // suppress a player is not the same as inability to change the forecast.
+      {
+        const expectedInput = context.expected_input_identities?.[input.input_class];
+        if (!expectedInput) {
+          fail('input_source_ungoverned', `${at}.content_sha256`,
+            `Admission requires a consumer-owned expected identity for input class ` +
+            `"${input.input_class}". Verifying the publisher's own selection is not provenance.`);
+        } else if (
+          // Bound whole. A partially bound reference is an unbound reference
+          // for every field left out: retaining the digest while relabelling
+          // the artifact type, version or producing commit records input
+          // provenance nothing verified.
+          expectedInput.content_sha256 !== input.content_sha256 ||
+          expectedInput.owner_repository !== input.owner_repository ||
+          expectedInput.owner_commit_sha !== input.owner_commit_sha ||
+          expectedInput.artifact_type !== input.artifact_type ||
+          expectedInput.artifact_version !== input.artifact_version ||
+          expectedInput.uri_or_path !== input.uri_or_path
+        ) {
+          fail('input_source_ungoverned', `${at}.content_sha256`,
+            `Required input "${input.input_id}" does not match the consumer-owned expected ` +
+            `source for class "${input.input_class}".`);
+        }
+      }
+      // Same locator rule as above. The shape checks apply to every class; only
+      // the two ORDERING comparisons are class-dependent, because only they
+      // assume a record's own time is what makes it admissible.
+      if (
+        !isCanonicalUtc(verification.max_record_effective_at) ||
+        !isCanonicalUtc(verification.verified_forecast_cutoff) ||
+        !isCanonicalUtc(verification.verified_source_as_of) ||
+        (recordTimesGovern && cutoffMs !== null &&
+          new Date(verification.max_record_effective_at).getTime() > cutoffMs) ||
+        (recordTimesGovern && isCanonicalUtc(verification.verified_source_as_of) &&
+          new Date(verification.max_record_effective_at).getTime() >
+            new Date(verification.verified_source_as_of).getTime())
+      ) {
+        fail('input_verification_binding_mismatch', `${at}.cutoff_evidence`,
+          'Record-level evidence timestamps are invalid or include a record after the forecast cutoff.');
+      }
+      if (
+        !verificationArtifact?.artifact_type ||
+        !verificationArtifact?.artifact_version ||
+        !verificationArtifact?.uri_or_path ||
+        !WEEKLY_SHA256_PATTERN.test(verificationArtifact?.content_sha256 ?? '') ||
+        (!isExample && WEEKLY_PLACEHOLDER_HASH_PATTERN.test(
+          verificationArtifact?.content_sha256 ?? '',
+        )) ||
+        (!isExample && WEEKLY_EXAMPLE_MARKERS.some((marker) =>
+          verificationArtifact?.uri_or_path.toLowerCase().includes(marker)))
+      ) {
+        fail('input_verification_artifact_invalid', `${at}.cutoff_evidence`,
+          'Record-level verification must be backed by a content-addressed verification artifact.');
+      }
+    }
+  });
+
+  for (const evidence of context.record_level_input_evidence ?? []) {
+    if (!seenInputIds.has(evidence.input_id)) {
+      fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
+        `Verification evidence references undeclared input "${evidence.input_id}".`);
+    }
+    // The membership list is the evidence; the count is a summary of it. If
+    // they disagree, one of them is fabricated.
+    const members = evidence.eligible_population_row_ids ?? [];
+    if (!Array.isArray(evidence.eligible_population_row_ids)) {
+      fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
+        `Input "${evidence.input_id}" verification carries no eligible population-row membership.`);
+    } else if (new Set(members).size !== members.length) {
+      fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
+        `Input "${evidence.input_id}" lists a population row more than once as eligible.`);
+    } else if (evidence.record_count_eligible === 0 && members.length > 0) {
+      // Records and members are DIFFERENT UNITS with no derivable relation, so
+      // neither direction of a cardinality comparison is valid:
+      //
+      //   many records per member  `prior_season_realized_outcomes` is weekly,
+      //                            so one player contributes ~17 records;
+      //   many members per record  one `schedule_and_opponent_context` game
+      //                            record supplies opponent context for every
+      //                            player on both teams.
+      //
+      // An earlier revision required equality, which rejected the first case.
+      // Its correction required `members <= records`, which rejects the second
+      // and would have blocked any schedule-aware publication. The ratio simply
+      // is not a contract-level invariant; it is a property of each input
+      // class's record granularity, which this contract does not model.
+      //
+      // What does hold is the zero case: with no eligible records there is
+      // nothing from which membership could be derived. The membership list
+      // itself — not its length — is what the per-player checks rely on.
+      fail('input_verification_binding_mismatch', 'verification_context.record_level_input_evidence',
+        `Input "${evidence.input_id}" reports no eligible records but claims verified membership ` +
+        `for ${members.length} population rows.`);
+    }
+  }
+
+  // Required classes must actually be present as inputs.
+  for (const required of WEEKLY_REQUIRED_INPUT_CLASSES) {
+    if (!seenInputClasses.has(required)) {
+      fail('required_input_class_missing', 'artifact_inputs',
+        `Required input class "${required}" has no artifact input.`);
+    }
+  }
+
+  // --- rows: recompute rather than trust ----------------------------------
+  const censusRowCount = manifest.population_census?.row_count ?? 0;
+
+  if (!isCanonicalUtc(manifest.population_census?.effective_at)) {
+    fail('census_effective_at_invalid', 'population_census.effective_at',
+      'Census effective_at must be a canonical UTC instant.');
+  } else if (context.census && !isCanonicalUtc(context.census.effective_at)) {
+    // The manifest's copy is a publisher assertion. Without the instant read
+    // from the verified bytes there is nothing to check it against, and the
+    // cutoff comparison degrades to self-certification.
+    fail('census_effective_at_invalid', 'verification_context.census.effective_at',
+      'The verified census must carry the effective instant read from its own bytes.');
+  } else if (context.census && context.census.effective_at !== manifest.population_census.effective_at) {
+    fail('census_effective_at_invalid', 'population_census.effective_at',
+      `Manifest census effective_at "${manifest.population_census.effective_at}" does not match ` +
+      `the verified census "${context.census.effective_at}".`);
+  } else if (
+    cutoffMs !== null &&
+    // Compare the VERIFIED instant where one exists; the manifest copy is only
+    // the fallback for the structurally-reviewable example, which is
+    // categorically non-admissible on other grounds anyway.
+    new Date(context.census?.effective_at ?? manifest.population_census.effective_at).getTime() > cutoffMs
+  ) {
+    fail('census_post_cutoff', 'population_census.effective_at',
+      'Census effective_at may not be after forecast_cutoff.');
+  }
+
+  // Scope, bound the same way as the effective instant.
+  //
+  // Owner, semantics ref, digest and source URI are all unchanged when a
+  // publisher rewrites the scope sentence, so nothing objected. Scope is what a
+  // reader uses to know WHO the census was supposed to enumerate — a
+  // publication describing a verified population under an invented scope
+  // misrepresents its own coverage while every hash still matches.
+  if (context.census) {
+    if (typeof context.census.scope_definition !== 'string' || !context.census.scope_definition) {
+      fail('census_scope_unverified', 'verification_context.census.scope_definition',
+        'The verified census must carry the scope definition read from its own bytes.');
+    } else if (context.census.scope_definition !== manifest.population_census?.scope_definition) {
+      fail('census_scope_unverified', 'population_census.scope_definition',
+        `Manifest census scope "${manifest.population_census?.scope_definition}" does not match ` +
+        `the verified census scope "${context.census.scope_definition}".`);
+    }
+  }
+  if (
+    manifest.population_census?.census_artifact_ref?.content_sha256 !==
+      manifest.population_census?.census_sha256 ||
+    !WEEKLY_SHA256_PATTERN.test(manifest.population_census?.census_sha256 ?? '')
+  ) {
+    fail('census_membership_mismatch', 'population_census',
+      'Census reference digest must equal census_sha256 and use lowercase SHA-256 syntax.');
+  }
+
+  if (rows.length === 0 && censusRowCount > 0) {
+    fail('empty_rows_for_non_empty_census', 'rows',
+      `Manifest claims a census of ${censusRowCount} rows but no rows were supplied.`);
+  }
+
+  const rowIdCounts = new Map<string, number>();
+  for (const row of rows) {
+    rowIdCounts.set(row.population_row_id, (rowIdCounts.get(row.population_row_id) ?? 0) + 1);
+  }
+  const duplicateRowIds = Array.from(rowIdCounts.entries()).filter(([, n]) => n > 1).map(([id]) => id);
+  for (const id of duplicateRowIds) {
+    fail('duplicate_population_row_id', 'rows', `Duplicate population_row_id "${id}".`);
+  }
+
+  // Canonical row order: ascending `population_row_id`.
+  //
+  // Nothing else in this contract is order-sensitive — membership is a set,
+  // ranks are checked by value, and every per-row rule is local — so the same
+  // logical publication could be emitted in any array order and each permutation
+  // hashed to a different `player_rows_sha256`, with every check passing. That
+  // makes the content address depend on producer iteration order, which defeats
+  // the point of content-addressing the artifact: two digests, one publication,
+  // and no way for a consumer to tell they are the same.
+  //
+  // Rejected rather than sorted before hashing. Canonicalising here would make
+  // the validator hash something other than the bytes it was handed, so the
+  // digest would no longer identify the artifact as published. The serializer
+  // version already fixes this order (§ canonical bytes); this enforces it.
+  for (let i = 1; i < rows.length; i += 1) {
+    if (compareForwardCanonicalStrings(
+      rows[i - 1].population_row_id, rows[i].population_row_id) > 0) {
+      fail('rows_not_canonically_ordered', `rows[${i}].population_row_id`,
+        `Rows must ascend by population_row_id: "${rows[i - 1].population_row_id}" precedes ` +
+        `"${rows[i].population_row_id}".`);
+      break;
+    }
+  }
+
+  // Recomputed status counts.
+  const recomputedStatusCounts = Object.fromEntries(
+    WEEKLY_FORECAST_STATUSES.map((status) => [status, 0]),
+  ) as WeeklyStatusCounts;
+  for (const row of rows) recomputedStatusCounts[row.forecast_status] += 1;
+  if (
+    canonicalForwardJsonSha256(recomputedStatusCounts) !==
+    canonicalForwardJsonSha256(manifest.status_counts)
+  ) {
+    fail('status_counts_mismatch', 'status_counts',
+      'Declared status counts do not match the counts recomputed from rows.');
+  }
+
+  // Recomputed identity coverage.
+  const resolvedRows = rows.filter((r) => r.identity?.identity_status === 'resolved');
+  const unresolvedRows = rows.filter((r) => r.identity?.identity_status === 'unresolved');
+  const conflictingRows = rows.filter((r) => r.identity?.identity_status === 'conflicting');
+  const recomputedCoverage: WeeklyIdentityCoverage = {
+    census_row_count: rows.length,
+    resolved_count: resolvedRows.length,
+    unresolved_count: unresolvedRows.length,
+    conflicting_count: conflictingRows.length,
+    coverage_rate: rows.length === 0 ? 0 : resolvedRows.length / rows.length,
+    unresolved_population_row_ids: unresolvedRows.map((r) => r.population_row_id),
+    conflicting_population_row_ids: conflictingRows.map((r) => r.population_row_id),
+  };
+  if (
+    canonicalForwardJsonSha256(recomputedCoverage) !==
+    canonicalForwardJsonSha256(manifest.identity_coverage)
+  ) {
+    fail('identity_coverage_mismatch', 'identity_coverage',
+      'Declared identity coverage does not match the coverage recomputed from rows.');
+  }
+
+  // Reconciliation recomputed against the rows actually supplied.
+  const reconciliation = manifest.population_reconciliation;
+  if (
+    !reconciliation?.one_to_one_complete ||
+    reconciliation.duplicate_population_row_ids.length > 0 ||
+    reconciliation.missing_population_row_ids.length > 0 ||
+    reconciliation.extra_population_row_ids.length > 0 ||
+    reconciliation.output_row_count !== rows.length ||
+    rows.length !== censusRowCount ||
+    duplicateRowIds.length > 0
+  ) {
+    fail('population_reconciliation_incomplete', 'population_reconciliation',
+      'Every census row must map to exactly one output row or typed unavailable status.');
+  }
+
+  // Exact membership needs the census itself.
+  if (!context.census) {
+    fail('census_membership_unverified', 'population_census',
+      'Census membership cannot be verified from a reference alone; supply verified census evidence.');
+  } else {
+    // Provenance first, against the CONSUMER'S expected identity.
+    //
+    // Comparing the context to the manifest only proves the two agree; a
+    // publisher controlling both can make them agree on anything. The expected
+    // identity is the trust anchor, so it is required, and both the manifest
+    // and the loaded census must match it.
+    const expected = context.expected_census_identity;
+    if (!expected) {
+      fail('census_provenance_ungoverned', 'population_census',
+        'Admission requires a consumer-owned expected census identity (governed owner, ' +
+        'semantics reference, source path and digest). Agreement between the manifest and ' +
+        'a caller-supplied context is not provenance.');
+    } else {
+      const matchesExpected = (actual: {
+        owner_repository?: string; semantics_ref?: string;
+        source_uri_or_path?: string; census_sha256?: string;
+      }) =>
+        actual.owner_repository === expected.owner_repository &&
+        actual.semantics_ref === expected.semantics_ref &&
+        actual.source_uri_or_path === expected.source_uri_or_path &&
+        actual.census_sha256 === expected.census_sha256;
+
+      if (expected.owner_repository !== WEEKLY_GOVERNED_CENSUS_OWNER) {
+        fail('census_provenance_ungoverned', 'population_census',
+          `The expected census identity must name the governed owner (${WEEKLY_GOVERNED_CENSUS_OWNER}).`);
+      }
+      // The artifact type and version of the census reference, pinned for the
+      // same reason as every other reference here: retaining the digest while
+      // relabelling the surrounding metadata records provenance nothing
+      // verified. Compared against the manifest only — these fields describe
+      // the reference the manifest cites, and the loaded census carries the
+      // bytes rather than the citation.
+      if (!expected.census_artifact_ref) {
+        fail('census_provenance_ungoverned', 'population_census.census_artifact_ref',
+          'Admission requires a consumer-owned expected census artifact type and version; ' +
+          'omitting the pin skips the comparison entirely.');
+      } else if (
+        (expected.census_artifact_ref.artifact_type !==
+           manifest.population_census?.census_artifact_ref?.artifact_type ||
+         expected.census_artifact_ref.artifact_version !==
+           manifest.population_census?.census_artifact_ref?.artifact_version)
+      ) {
+        fail('census_provenance_ungoverned', 'population_census.census_artifact_ref',
+          'The census artifact reference does not match the consumer-owned expected type and version.');
+      }
+      if (!matchesExpected({
+        owner_repository: context.census.owner_repository,
+        semantics_ref: context.census.semantics_ref,
+        source_uri_or_path: context.census.source_uri_or_path,
+        census_sha256: context.census.census_sha256,
+      })) {
+        fail('census_provenance_ungoverned', 'population_census',
+          'The loaded census does not match the consumer-owned expected census identity.');
+      }
+      if (!matchesExpected({
+        owner_repository: manifest.population_census.semantics_owner,
+        semantics_ref: manifest.population_census.semantics_ref,
+        source_uri_or_path: manifest.population_census.census_artifact_ref?.uri_or_path,
+        census_sha256: manifest.population_census.census_sha256,
+      })) {
+        fail('census_provenance_ungoverned', 'population_census',
+          'The manifest does not reference the consumer-owned expected census identity.');
+      }
+    }
+
+    if (context.census.census_sha256 !== manifest.population_census.census_sha256) {
+      fail('census_membership_mismatch', 'population_census.census_sha256',
+        'Verification context census digest does not match the manifest.');
+    }
+    const censusIds = new Set(context.census.population_row_ids);
+    const rowIds = new Set(rows.map((r) => r.population_row_id));
+    const missing = context.census.population_row_ids.filter((id) => !rowIds.has(id));
+    const extra = Array.from(rowIds).filter((id) => !censusIds.has(id));
+    if (
+      context.census.population_row_ids.length !== censusRowCount ||
+      censusIds.size !== context.census.population_row_ids.length ||
+      missing.length > 0 || extra.length > 0
+    ) {
+      fail('census_membership_mismatch', 'rows',
+        `Rows do not match census membership (missing ${missing.length}, extra ${extra.length}).`);
+    }
+  }
+
+  // --- per-row semantics --------------------------------------------------
+  const declaredInputIds = new Set(inputs.map((i) => i.input_id));
+  const requiredInputIds = new Set(
+    inputs.filter((i) => (WEEKLY_REQUIRED_INPUT_CLASSES as readonly string[]).includes(i.input_class))
+      .map((i) => i.input_id),
+  );
+  const availableRows: WeeklyAvailablePlayerRow[] = [];
+
+  // Verified per-input membership, derived by the consumer from the exact
+  // source bytes. An input that does not claim local verification — or claims
+  // it and supplies no evidence — has no verified membership here and
+  // therefore cannot contradict anything a row declares. Absence of evidence
+  // must stay silent; only present evidence gets to overrule a claim.
+  const verifiedMembersByInputId = new Map<string, ReadonlySet<string>>();
+  for (const input of inputs) {
+    if (input.cutoff_evidence?.record_level_verification !== 'locally_verified') continue;
+    const evidence = verificationByInputId.get(input.input_id);
+    if (!evidence || !Array.isArray(evidence.eligible_population_row_ids)) continue;
+    verifiedMembersByInputId.set(input.input_id, new Set(evidence.eligible_population_row_ids));
+  }
+  /** Inputs of a class whose verified membership holds an eligible record for `rowId`. */
+  const verifiedInputsHolding = (
+    rowId: string,
+    ...classes: readonly WeeklyPreseasonInputClass[]
+  ): string[] =>
+    inputs
+      .filter((i) => classes.includes(i.input_class))
+      .filter((i) => verifiedMembersByInputId.get(i.input_id)?.has(rowId))
+      .map((i) => i.input_id);
+
+  rows.forEach((row, index) => {
+    const at = `rows[${index}]`;
+    if (!['resolved', 'unresolved', 'conflicting'].includes(row.identity?.identity_status)) {
+      fail('available_row_identity_unresolved', `${at}.identity.identity_status`,
+        'Identity status must be resolved, unresolved, or conflicting.');
+    }
+    if (
+      (row.identity?.identity_status === 'resolved' && !row.identity.canonical_player_id) ||
+      (row.identity?.identity_status !== 'resolved' && row.identity?.canonical_player_id !== null)
+    ) {
+      fail('available_row_identity_unresolved', `${at}.identity.canonical_player_id`,
+        'Canonical id presence must agree with identity_status.');
+    }
+    if (row.identity?.fuzzy_join_used !== false) {
+      fail('identity_fuzzy_join_used', `${at}.identity`, 'Fuzzy identity joining is not permitted.');
+    }
+    if (row.identity?.synthetic_namespace_used !== false) {
+      fail('identity_synthetic_namespace_used', `${at}.identity`, 'Synthetic identifier namespaces are not permitted.');
+    }
+    if (row.actual_outcome !== null) {
+      fail('actual_outcome_present_before_target_week', `${at}.actual_outcome`,
+        'actual_outcome must be null before the target week is played.');
+    }
+    if (row.uncertainty?.status === 'unavailable_not_calibrated') {
+      const u = row.uncertainty;
+      if (u.lower_quantile !== null || u.median !== null || u.upper_quantile !== null ||
+          u.interval_lower !== null || u.interval_upper !== null || u.method_id !== null ||
+          u.method_version !== null) {
+        fail('fabricated_uncertainty', `${at}.uncertainty`, 'Range fields must be null when uncertainty is not calibrated.');
+      }
+    } else if (row.uncertainty?.status === 'calibrated') {
+      // Structural checks — a method string and finite, ordered numbers — are
+      // satisfiable by fabrication: arbitrary method ids and any ordered
+      // triple would pass. There is no calibration-evidence producer for this
+      // publication and no verification context that could bind one, so
+      // `calibrated` is categorically inadmissible here rather than admissible
+      // on self-declaration. Calibration is a parked, operator-owned follow-up;
+      // when it lands it must arrive with independently verified evidence and
+      // its own contract revision.
+      fail('calibrated_uncertainty_unsupported', `${at}.uncertainty.status`,
+        'This contract is point-only: calibrated uncertainty cannot be admitted ' +
+        'without independently verified calibration evidence.');
+    } else {
+      fail('fabricated_uncertainty', `${at}.uncertainty`, 'Unknown uncertainty status.');
+    }
+    // Per-row lineage, checked against the verified source bytes.
+    //
+    // Being a DECLARED input id was the only requirement, and the membership
+    // check that did exist covered required inputs on available rows alone. So
+    // a row could claim lineage the evidence contradicts: an unavailable row
+    // claiming it used the very required input its own reason says is missing,
+    // or an available row crediting an optional source that holds no record for
+    // it. Published lineage is what a consumer reads to understand where a
+    // number came from, so an unverifiable claim there is not cosmetic.
+    //
+    // Only present evidence overrules a claim: an input without verified
+    // membership stays silent, exactly as elsewhere in this contract.
+    for (const id of row.input_ids_used ?? []) {
+      if (!declaredInputIds.has(id)) {
+        fail('undeclared_input_id_referenced', `${at}.input_ids_used`,
+          `Row references undeclared input id "${id}".`);
+        continue;
+      }
+      const members = verifiedMembersByInputId.get(id);
+      if (members && !members.has(row.population_row_id)) {
+        fail('row_input_lineage_unverified', `${at}.input_ids_used`,
+          `Row "${row.population_row_id}" claims it used input "${id}", but that input's ` +
+          'verified membership holds no eligible record for it.');
+      }
+    }
+
+    // Census-derived identity state, checked for EVERY row.
+    //
+    // This lived inside the unavailable branch, so available rows were never
+    // bound and a context could omit state evidence for all of them and still
+    // validate. The absence test passed only because the fixture happens to
+    // contain unavailable rows — placement, not coverage, was doing the work.
+    const governedIdentityState =
+      context.census?.identity_states_by_row_id?.[row.population_row_id];
+    if (context.census && governedIdentityState === undefined) {
+      fail('identity_evidence_unbound', `${at}.identity.identity_status`,
+        `The verified census records no identity state for "${row.population_row_id}".`);
+    } else if (governedIdentityState !== undefined &&
+               row.identity?.identity_status !== governedIdentityState) {
+      fail('identity_evidence_unbound', `${at}.identity.identity_status`,
+        `Row "${row.population_row_id}" declares identity_status ` +
+        `'${row.identity?.identity_status}' while the verified census records ` +
+        `'${governedIdentityState}'.`);
+    }
+
+    // Census-derived eligibility, checked for EVERY row, in the shared path for
+    // the same reason the identity-state check was moved here: a check that
+    // only runs on one branch binds only that branch.
+    const governedEligibility =
+      context.census?.eligibility_states_by_row_id?.[row.population_row_id];
+    if (context.census && governedEligibility === undefined) {
+      fail('eligibility_evidence_unbound', `${at}.forecast_status`,
+        `The verified census records no eligibility decision for "${row.population_row_id}".`);
+    }
+
+    // Governed primary-status precedence.
+    //
+    // Each status below is bound to its own dimension, which decides whether a
+    // claim is TRUE. It does not decide which of several true claims is the
+    // primary one. A row with both an unresolved identity and unresolved
+    // eligibility could therefore be filed under either, at the publisher's
+    // choice, and the published `status_counts` would differ — the same row
+    // reported in different buckets on different runs.
+    //
+    // The forward-artifact contract fixes the order (§4 validation rules):
+    // unresolved/conflicting identity, then unresolved eligibility, then
+    // ineligible, then unresolved position domain, then unsupported position,
+    // then missing required inputs, then available. The census carries every
+    // dimension down to position; level 6 is decided below from verified input
+    // membership, which leaves only `forecast_available` unforced.
+    //
+    // Applied to EVERY row, not only the two statuses the finding named — the
+    // same ambiguity reaches `population_ineligible` and
+    // `unsupported_position_domain`, and fixing only what was reported would
+    // leave the identical defect one status over.
+    const governedPosition = context.census?.positions_by_row_id?.[row.population_row_id];
+    const governedPrimaryStatus: WeeklyForecastStatus | null = (() => {
+      if (governedIdentityState !== undefined && governedIdentityState !== 'resolved') {
+        return governedIdentityState === 'conflicting'
+          ? 'identity_conflicting'
+          : 'identity_unresolved';
+      }
+      if (governedEligibility === 'unresolved') return 'eligibility_unresolved';
+      if (governedEligibility === 'ineligible') return 'population_ineligible';
+      if (governedPosition === null) return 'position_domain_unresolved';
+      if (
+        governedPosition !== undefined &&
+        !(WEEKLY_SUPPORTED_POSITIONS as readonly string[]).includes(governedPosition)
+      ) {
+        return 'unsupported_position_domain';
+      }
+
+      // Level 6. Decidable only when EVERY required input carries verified
+      // membership: an unverified required input could genuinely be the missing
+      // one, so absence of evidence must not decide a status.
+      const requiredIds = [...requiredInputIds];
+      if (requiredIds.length === 0) return null;
+      if (!requiredIds.every((id) => verifiedMembersByInputId.has(id))) return null;
+      const missingClasses = new Set(
+        inputs
+          .filter((i) =>
+            requiredInputIds.has(i.input_id) &&
+            !verifiedMembersByInputId.get(i.input_id)!.has(row.population_row_id))
+          .map((i) => i.input_class),
+      );
+      if (missingClasses.size === 0) return null;
+
+      // Two statuses live at this level, and which one is truthful depends on
+      // WHICH required inputs are missing. `no_prior_season_history` is the
+      // specific reason and is already contradicted unless BOTH prior-season
+      // classes lack the row, so it applies only when the missing set is exactly
+      // those two; anything else is the general reason. Choosing the subset rule
+      // this way keeps the two checks consistent — a narrower rule (any prior-
+      // season class missing) would have selected a status those checks refuse,
+      // recreating the dead end the previous round fixed.
+      const priorSeasonClasses: readonly string[] =
+        ['prior_season_realized_outcomes', 'prior_season_usage_and_role'];
+      const missingIsExactlyPriorSeason =
+        missingClasses.size === priorSeasonClasses.length &&
+        priorSeasonClasses.every((c) => missingClasses.has(c as WeeklyPreseasonInputClass));
+      return missingIsExactlyPriorSeason
+        ? 'no_prior_season_history'
+        : 'unavailable_missing_required_inputs';
+    })();
+    if (governedPrimaryStatus !== null && row.forecast_status !== governedPrimaryStatus) {
+      fail('forecast_status_precedence_violated', `${at}.forecast_status`,
+        `Row "${row.population_row_id}" declares ${row.forecast_status}, but the verified ` +
+        `census makes ${governedPrimaryStatus} the primary status under the governed ` +
+        'fail-closed precedence.');
+    }
+
+    if (row.forecast_status === 'forecast_available') {
+      const available = row as WeeklyAvailablePlayerRow;
+      availableRows.push(available);
+      // Belt and braces with the parser guard above: a caller reaching the
+      // semantic validator directly must get the same answer.
+      if ((row as { status_reasons?: unknown }).status_reasons !== undefined) {
+        fail('available_row_carries_status_reasons', `${at}.status_reasons`,
+          'An available row may not carry status reasons.');
+      }
+      // An available forecast asserts the player belongs in the rankings. The
+      // census does not establish that -- it deliberately enumerates ineligible
+      // records too -- so without this the publisher chose the target
+      // population by assertion, and could rank a retired or roster-inactive
+      // player that every other check clears.
+      if (governedEligibility !== undefined && governedEligibility !== 'eligible') {
+        fail('eligibility_evidence_unbound', `${at}.forecast_status`,
+          `Row "${row.population_row_id}" is ranked as forecast_available while the ` +
+          `verified census records eligibility '${governedEligibility}'.`);
+      }
+      if (!available.identity?.canonical_player_id || available.identity.identity_status !== 'resolved') {
+        fail('available_row_identity_unresolved', `${at}.identity`,
+          'An available forecast requires a resolved canonical identity.');
+      }
+      if (!(WEEKLY_SUPPORTED_POSITIONS as readonly string[]).includes(available.identity.position ?? '')) {
+        fail('available_row_identity_unresolved', `${at}.identity.position`,
+          'An available forecast requires a supported offensive position.');
+      }
+      if (typeof available.point_forecast !== 'number' || !Number.isFinite(available.point_forecast)) {
+        fail('available_row_point_forecast_invalid', `${at}.point_forecast`, 'Point forecast must be finite.');
+      }
+      if (!Number.isInteger(available.rank) || available.rank < 1) {
+        fail('available_row_rank_invalid', `${at}.rank`, 'Rank must be a positive integer.');
+      }
+      for (const requiredId of requiredInputIds) {
+        if (!(available.input_ids_used ?? []).includes(requiredId)) {
+          fail('available_row_missing_required_input', `${at}.input_ids_used`,
+            `An available forecast must use required input "${requiredId}".`);
+          continue;
+        }
+        // `input_ids_used` is the publisher's own claim. Verify the row is a
+        // member of that input according to the consumer's exact-byte
+        // verification, rather than trusting the string it listed.
+        // Only meaningful where the document claims local verification. An
+        // example that truthfully declares `unverified_requires_source_bytes`
+        // is already non-admissible on that ground; demanding membership
+        // evidence it never claimed would be a category error.
+        const declaredInput = inputs.find((i) => i.input_id === requiredId);
+        if (declaredInput?.cutoff_evidence?.record_level_verification !== 'locally_verified') continue;
+        const evidence = verificationByInputId.get(requiredId);
+        if (!evidence) {
+          fail('available_row_missing_required_input', `${at}.input_ids_used`,
+            `Required input "${requiredId}" claims local verification but supplies no evidence.`);
+        } else if (!(evidence.eligible_population_row_ids ?? []).includes(row.population_row_id)) {
+          fail('available_row_missing_required_input', `${at}.input_ids_used`,
+            `Required input "${requiredId}" holds no verified eligible record for ` +
+            `population row "${row.population_row_id}".`);
+        }
+      }
+    } else {
+      if (row.rank !== null || row.point_forecast !== null) {
+        fail('rank_on_unavailable_row', at, 'An unavailable row may not carry a rank or a point forecast.');
+      }
+      if (!Array.isArray(row.status_reasons) || row.status_reasons.length === 0) {
+        fail('unavailable_row_missing_reason', `${at}.status_reasons`,
+          'An unavailable row requires at least one typed reason.');
+      } else {
+        // A reason used to be any non-empty string. A fully verified run could
+        // therefore publish `unavailable_missing_required_inputs` next to an
+        // unrelated or invented reason, and a consumer had no way to learn which
+        // required input actually failed.
+        //
+        // What can be verified is bound: the dimension must be the one the row's
+        // governed status belongs to, and a `required_input` reason must name a
+        // declared required input the verified membership shows the row is
+        // genuinely missing from. `code` stays producer-native — nothing here
+        // can check a finer-grained code, and inventing a closed list would be
+        // shape masquerading as evidence.
+        const expectedDimension =
+          WEEKLY_STATUS_REASON_DIMENSION_BY_STATUS[
+            row.forecast_status as Exclude<WeeklyForecastStatus, 'forecast_available'>
+          ];
+        row.status_reasons.forEach((reason, index) => {
+          const atReason = `${at}.status_reasons[${index}]`;
+          if (!reason?.code) {
+            fail('unavailable_row_missing_reason', `${atReason}.code`,
+              'A typed reason requires a non-empty code.');
+          }
+          if (expectedDimension !== undefined && reason?.dimension !== expectedDimension) {
+            fail('unavailable_row_reason_unbound', `${atReason}.dimension`,
+              `Row "${row.population_row_id}" is ${row.forecast_status}, whose reason dimension ` +
+              `is '${expectedDimension}', but this reason declares ` +
+              `${JSON.stringify(reason?.dimension ?? null)}.`);
+          }
+          if (reason?.dimension === 'required_input') {
+            if (!reason.input_id) {
+              fail('unavailable_row_reason_unbound', `${atReason}.input_id`,
+                'A required-input reason must name the input that failed.');
+            } else if (!requiredInputIds.has(reason.input_id)) {
+              fail('unavailable_row_reason_unbound', `${atReason}.input_id`,
+                `Reason names "${reason.input_id}", which is not a declared required input.`);
+            } else {
+              const members = verifiedMembersByInputId.get(reason.input_id);
+              if (members?.has(row.population_row_id)) {
+                fail('unavailable_row_reason_unbound', `${atReason}.input_id`,
+                  `Reason names required input "${reason.input_id}", but its verified membership ` +
+                  `holds an eligible record for "${row.population_row_id}".`);
+              }
+            }
+          } else if (reason?.input_id != null) {
+            fail('unavailable_row_reason_unbound', `${atReason}.input_id`,
+              `A ${reason.dimension} reason cannot name an input id.`);
+          }
+        });
+
+        // Completeness, not just correctness. The checks above stop a reason
+        // from blaming the wrong input; they say nothing about the inputs the
+        // publisher chose to stay silent about. The governed rule is that
+        // "every missing required feature has its own typed source-linked
+        // reason" (§4), so naming one of two genuinely missing inputs leaves a
+        // consumer believing the other is fine.
+        //
+        // Decidable only when every required input carries verified membership,
+        // for the same reason the precedence level is: an unverified input
+        // cannot be shown to be missing, so silence about it is not a gap.
+        if (expectedDimension === 'required_input') {
+          const requiredIds = [...requiredInputIds];
+          if (requiredIds.length > 0 && requiredIds.every((id) => verifiedMembersByInputId.has(id))) {
+            const named = new Set(
+              row.status_reasons.map((reason) => reason?.input_id).filter(Boolean),
+            );
+            const unexplained = requiredIds.filter((id) =>
+              !verifiedMembersByInputId.get(id)!.has(row.population_row_id) && !named.has(id));
+            if (unexplained.length > 0) {
+              fail('unavailable_row_missing_reason', `${at}.status_reasons`,
+                `Row "${row.population_row_id}" has no reason naming required ` +
+                `input${unexplained.length === 1 ? '' : 's'} ` +
+                `${unexplained.map((id) => `"${id}"`).join(', ')}, which the verified membership ` +
+                'shows it is missing from.');
+            }
+          }
+        }
+      }
+      // An unavailability REASON must be consistent with the verified identity
+      // state, not merely well-formed. Binding canonical_player_id closed the
+      // variant that nulled the id; a publisher can otherwise keep the correct
+      // non-null id and identity_status 'resolved', flip forecast_status to
+      // identity_unresolved, clear the forecast and rank, renumber the
+      // remaining ranks and recompute every summary, digest and receipt — and
+      // selectively omit a governed player while every other check passes.
+      const verifiedCanonical = context.census?.canonical_player_ids_by_row_id?.[row.population_row_id];
+      const claimsIdentityProblem =
+        row.forecast_status === 'identity_unresolved' ||
+        row.forecast_status === 'identity_conflicting';
+      if (claimsIdentityProblem && verifiedCanonical) {
+        fail('identity_evidence_unbound', `${at}.forecast_status`,
+          `Row "${row.population_row_id}" claims ${row.forecast_status}, but the verified ` +
+          `census resolves it to "${verifiedCanonical}". An unavailability reason must be ` +
+          'consistent with the verified identity state.');
+      }
+      // Exact correspondence, not merely "not resolved". Rejecting only the
+      // `resolved` case left `identity_unresolved` paired with
+      // identity_status `conflicting` (and the reverse) admissible, and those
+      // are distinct states that feed the published coverage and status counts
+      // — so admission could record a contradictory identity failure reason.
+      const expectedIdentityStatusFor: Record<string, string> = {
+        identity_unresolved: 'unresolved',
+        identity_conflicting: 'conflicting',
+      };
+      if (claimsIdentityProblem) {
+        const expectedStatus = expectedIdentityStatusFor[row.forecast_status];
+        if (row.identity?.identity_status !== expectedStatus) {
+          fail('identity_evidence_unbound', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims ${row.forecast_status}, which requires ` +
+            `identity_status '${expectedStatus}', but declares ` +
+            `'${row.identity?.identity_status}'.`);
+        }
+      }
+
+      // The same selective-suppression vector, one status further along.
+      // Binding the identity reasons above closed only the reasons that talk
+      // about identity. A publisher can otherwise leave identity entirely
+      // correct and instead claim the row's *inputs* are missing, or that it
+      // has no prior season, or that its roster state is unknown — clearing
+      // the forecast and rank, renumbering the survivors, and recomputing
+      // every summary, digest, receipt and trusted binding — while the
+      // verified evidence for those very inputs holds an eligible record for
+      // the row. Every unavailability reason is a claim *about evidence*, so
+      // each one must lose to the evidence wherever the evidence exists.
+      const contradicts = (holders: readonly string[], claim: string) => {
+        if (holders.length === 0) return;
+        fail('unavailability_reason_contradicted', `${at}.forecast_status`,
+          `Row "${row.population_row_id}" claims ${row.forecast_status}, but ${claim} ` +
+          `(verified input${holders.length === 1 ? '' : 's'} ${holders.map((h) => `"${h}"`).join(', ')}). ` +
+          'An unavailability reason must be consistent with the verified evidence.');
+      };
+
+      if (row.forecast_status === 'unavailable_missing_required_inputs') {
+        const requiredIds = [...requiredInputIds];
+        // Decidable only when *every* required input carries verified
+        // membership: an unverified required input could genuinely be the
+        // missing one, which would make the row's claim true.
+        const allVerified =
+          requiredIds.length > 0 && requiredIds.every((id) => verifiedMembersByInputId.has(id));
+        if (allVerified && requiredIds.every((id) => verifiedMembersByInputId.get(id)!.has(row.population_row_id))) {
+          contradicts(requiredIds, 'every required input holds a verified eligible record for it');
+        }
+      }
+
+      if (row.forecast_status === 'no_prior_season_history') {
+        contradicts(
+          verifiedInputsHolding(
+            row.population_row_id,
+            'prior_season_realized_outcomes',
+            'prior_season_usage_and_role',
+          ),
+          'the verified prior-season inputs hold an eligible record for it',
+        );
+      }
+
+      // `roster_state_unresolved` asserts a fact this contract carries NO
+      // evidence for, in either direction. It is therefore categorically
+      // inadmissible here, exactly as `calibrated` uncertainty is above and for
+      // the same reason: a status whose truth cannot be verified is not a
+      // reason, it is a free suppression channel. A publisher could otherwise
+      // convert every row to it, recompute the counts, digests, receipt and
+      // trusted binding, and admit a publication containing no rankings at all.
+      //
+      // It needs the verified `team_assignment_status` of the roster record.
+      // Membership in the roster input establishes only that a timely record
+      // exists; the governed row shape explicitly admits `unknown` and
+      // `unavailable` assignment states, so a record can be present while the
+      // state is genuinely unresolved. Admitting it requires carrying that
+      // evidence in `WeeklyVerificationContext` and binding to it. Until then
+      // the honest answer is refusal. Tracked as parked follow-up.
+      if (row.forecast_status === 'roster_state_unresolved') {
+        fail('unavailability_reason_unverifiable', `${at}.forecast_status`,
+          `Row "${row.population_row_id}" claims ${row.forecast_status}, but this contract ` +
+          'carries no evidence that could confirm or refute it. Such a status cannot be ' +
+          'admission-capable: it would let any row be suppressed on assertion alone.');
+      }
+
+      // `population_ineligible` was refused on the same ground until the census
+      // context began carrying the governed decision. It is now decided from
+      // that verified value, exactly like `unsupported_position_domain` below:
+      // truthful when the census says `ineligible`, a lie when it says
+      // `eligible`, and still unverifiable when the census itself is unresolved.
+      //
+      // Restoring it is not a loosening. Refusing it outright left an ineligible
+      // census row with no admissible status at all, so the only way to publish
+      // was to rank the player -- which is the hole this round closes. A status
+      // bound to verified evidence is strictly stronger than a status that
+      // cannot be declared and an available row that nothing checks.
+      if (row.forecast_status === 'population_ineligible') {
+        if (governedEligibility === undefined) {
+          fail('unavailability_reason_unverifiable', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims population_ineligible, but no verified ` +
+            'census eligibility decision was supplied that could confirm or refute it.');
+        } else if (governedEligibility !== 'ineligible') {
+          fail('unavailability_reason_contradicted', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims population_ineligible while the verified ` +
+            `census records eligibility '${governedEligibility}'.`);
+        }
+      }
+
+      // The two unresolved statuses, bound the same way. Each is truthful for
+      // exactly one governed value, so neither is a suppression channel: a row
+      // the census resolves cannot borrow them, and a row the census leaves
+      // unresolved cannot be ranked (availability requires `eligible` and a
+      // supported position).
+      if (row.forecast_status === 'eligibility_unresolved') {
+        if (governedEligibility === undefined) {
+          fail('unavailability_reason_unverifiable', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims eligibility_unresolved, but no verified ` +
+            'census eligibility decision was supplied that could confirm or refute it.');
+        } else if (governedEligibility !== 'unresolved') {
+          fail('unavailability_reason_contradicted', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims eligibility_unresolved while the verified ` +
+            `census records eligibility '${governedEligibility}'.`);
+        }
+      }
+
+      if (row.forecast_status === 'position_domain_unresolved') {
+        const governedPosition = context.census?.positions_by_row_id?.[row.population_row_id];
+        if (governedPosition === undefined) {
+          fail('unavailability_reason_unverifiable', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims position_domain_unresolved, but the verified ` +
+            'census carries no position record that could confirm or refute it.');
+        } else if (governedPosition !== null) {
+          // A governed position that exists is either supported or unsupported;
+          // either way it is RESOLVED, and the row must use the status that
+          // matches it rather than this one.
+          fail('unavailability_reason_contradicted', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims position_domain_unresolved while the verified ` +
+            `census assigns position ${JSON.stringify(governedPosition)}.`);
+        }
+      }
+      if (row.forecast_status === 'unsupported_position_domain') {
+        // Judged against the VERIFIED census position, never the row's own.
+        // Comparing the status to the publisher's own declaration only caught
+        // self-contradiction: relabelling a resolved WR as `K` made the row
+        // internally consistent and suppressed it, and repeating that across
+        // the population empties the rankings on assertion alone — the same
+        // vector as the two statuses refused above. The position binding below
+        // forces the declaration to match the census; this decides the status
+        // from that governed value.
+        const governedPosition = context.census?.positions_by_row_id?.[row.population_row_id];
+        if (governedPosition === undefined || governedPosition === null) {
+          fail('unavailability_reason_unverifiable', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims unsupported_position_domain, but the verified ` +
+            'census records no position for it, so the claim can be neither confirmed nor refuted.');
+        } else if ((WEEKLY_SUPPORTED_POSITIONS as readonly string[]).includes(governedPosition)) {
+          fail('unavailability_reason_contradicted', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims unsupported_position_domain, but the verified ` +
+            `census assigns it the supported position "${governedPosition}".`);
+        }
+      }
+    }
+
+    const identityRef = row.identity?.source_identity_ref;
+    if (
+      !identityRef?.uri_or_path ||
+      !identityRef?.record_id ||
+      !identityRef?.content_sha256 ||
+      !WEEKLY_SHA256_PATTERN.test(identityRef.content_sha256)
+    ) {
+      fail('available_row_identity_unresolved', `${at}.identity.source_identity_ref`,
+        'Every row requires a content-addressed source identity record.');
+    } else {
+      // Presence and hash *shape* are not evidence. Any nonempty URI plus any
+      // syntactically valid digest would otherwise let a publication attach the
+      // wrong canonical_player_id to a real population row and still be
+      // admitted — producing forecasts for the wrong players.
+      //
+      // The identity record is therefore bound to the governed census: its
+      // digest must be the census the manifest declares (which the verification
+      // context has already pinned to the governed TIBER-Data owner and
+      // verified against consumer-owned evidence), and its record must be *this*
+      // row's census record rather than some other row's.
+      if (identityRef.content_sha256 !== manifest.population_census.census_sha256) {
+        fail('identity_evidence_unbound', `${at}.identity.source_identity_ref.content_sha256`,
+          'Row identity evidence must be bound to the verified governed census digest.');
+      }
+      // The URI and the input id, bound for the same reason as the digest: a
+      // partially bound reference is an unbound reference for every field left
+      // out. The verification context already pins the governed census source
+      // path, so there is no reason to leave the row's citation of it free.
+      if (
+        context.expected_census_identity?.source_uri_or_path !== undefined &&
+        identityRef.uri_or_path !== context.expected_census_identity.source_uri_or_path
+      ) {
+        fail('identity_evidence_unbound', `${at}.identity.source_identity_ref.uri_or_path`,
+          `Row identity evidence cites "${identityRef.uri_or_path}" but the governed census ` +
+          `source is "${context.expected_census_identity.source_uri_or_path}".`);
+      }
+      if (identityRef.input_id !== null) {
+        // The census is referenced through `population_census`, never as an
+        // `artifact_inputs` entry, so any input id here resolves to nothing the
+        // contract governs — ungoverned metadata recorded as provenance.
+        fail('identity_evidence_unbound', `${at}.identity.source_identity_ref.input_id`,
+          'Row identity evidence is census-sourced; its input_id must be null rather than ' +
+          'naming an id no declared artifact input carries.');
+      }
+      if (identityRef.record_id !== row.population_row_id) {
+        fail('identity_evidence_unbound', `${at}.identity.source_identity_ref.record_id`,
+          `Row identity evidence must reference this row's census record ` +
+          `("${row.population_row_id}"), not "${identityRef.record_id}".`);
+      }
+      // Citing a valid record is not the same as belonging to it. Swapping one
+      // row's canonical id for another's, while keeping its own record id and
+      // digest, satisfies every per-field check above — and produces forecasts
+      // attributed to the wrong player. Bind the id to the verified census
+      // record's contents.
+      // Position is governed census data ("<cutoff-bound position | unknown>"),
+      // not a publisher assertion. Binding it closes the misdeclaration hole in
+      // both directions: an available row cannot claim a supported position the
+      // census disagrees with, and an unavailable row cannot invent an
+      // unsupported one to justify suppressing itself.
+      const censusPositions = context.census?.positions_by_row_id;
+      if (!censusPositions) {
+        fail('identity_evidence_unbound', `${at}.identity.position`,
+          'Verified census positions are required to bind row positions.');
+      } else {
+        const expectedPosition = censusPositions[row.population_row_id];
+        const declaredPosition = row.identity?.position ?? null;
+        if (expectedPosition === undefined) {
+          fail('identity_evidence_unbound', `${at}.identity.position`,
+            `The verified census carries no position record for "${row.population_row_id}".`);
+        } else if (declaredPosition !== expectedPosition) {
+          fail('identity_evidence_unbound', `${at}.identity.position`,
+            `Row "${row.population_row_id}" declares position ${JSON.stringify(declaredPosition)} ` +
+            `while the verified census assigns ${JSON.stringify(expectedPosition)}.`);
+        }
+      }
+
+      // Team abbreviation and display name are governed census fields published
+      // on every admitted row, and were bound to nothing. A verified execution
+      // digest proves the run emitted them; it says nothing about whether they
+      // match the governed source, so stale or wrong values reached consumers
+      // intact under a correct canonical id.
+      //
+      // Same shape as the position binding above, and fail-closed the same way.
+      // `display_name` was not named in the finding — it is the identical defect
+      // one field over, and fixing only the reported one would leave it.
+      const censusBoundIdentityFields = [
+        {
+          map: context.census?.team_abbrs_by_row_id,
+          declared: row.identity?.nfl_team_abbr ?? null,
+          field: 'nfl_team_abbr',
+          noun: 'team abbreviations',
+        },
+        {
+          map: context.census?.display_names_by_row_id,
+          declared: row.identity?.display_name ?? null,
+          field: 'display_name',
+          noun: 'display names',
+        },
+      ] as const;
+      for (const { map, declared, field, noun } of censusBoundIdentityFields) {
+        if (!map) {
+          fail('identity_evidence_unbound', `${at}.identity.${field}`,
+            `Verified census ${noun} are required to bind row ${noun}.`);
+          continue;
+        }
+        const expected = map[row.population_row_id];
+        if (expected === undefined) {
+          fail('identity_evidence_unbound', `${at}.identity.${field}`,
+            `The verified census carries no ${field} for "${row.population_row_id}".`);
+        } else if (declared !== expected) {
+          fail('identity_evidence_unbound', `${at}.identity.${field}`,
+            `Row "${row.population_row_id}" declares ${field} ${JSON.stringify(declared)} ` +
+            `while the verified census assigns ${JSON.stringify(expected)}.`);
+        }
+      }
+
+      const censusIdentities = context.census?.canonical_player_ids_by_row_id;
+      if (!censusIdentities) {
+        fail('identity_evidence_unbound', `${at}.identity.canonical_player_id`,
+          'Verified census record identities are required to bind canonical player ids.');
+      } else {
+        const expectedCanonical = censusIdentities[row.population_row_id];
+        const declared = row.identity?.canonical_player_id ?? null;
+        if (expectedCanonical === undefined) {
+          fail('identity_evidence_unbound', `${at}.identity.canonical_player_id`,
+            `The verified census carries no record for "${row.population_row_id}".`);
+        } else if (declared !== expectedCanonical) {
+          // Exact equality, INCLUDING null. Exempting a null declaration let a
+          // publication downgrade a governed resolved player to
+          // identity_unresolved, null its canonical id, forecast and rank,
+          // recompute counts and digests, and still be admitted — selective
+          // suppression of a player the trusted census says is resolvable.
+          fail('identity_evidence_unbound', `${at}.identity.canonical_player_id`,
+            `Declared canonical id "${declared}" is not the identity the governed census ` +
+            `assigns to record "${row.population_row_id}".`);
+        }
+      }
+    }
+  });
+
+  // One-to-one identity: two population rows may not resolve to the same
+  // canonical player, or a forecast for one player is published twice under
+  // different census records.
+  const canonicalSeen = new Map<string, string>();
+  for (const row of rows) {
+    const canonical = row.identity?.canonical_player_id;
+    if (!canonical) continue;
+    const previous = canonicalSeen.get(canonical);
+    if (previous !== undefined) {
+      fail('identity_evidence_unbound', 'rows',
+        `Canonical player id "${canonical}" is claimed by both "${previous}" and ` +
+        `"${row.population_row_id}"; census identity must be one-to-one.`);
+    } else {
+      canonicalSeen.set(canonical, row.population_row_id);
+    }
+  }
+
+  const availableUncertaintyStatuses = new Set(
+    availableRows.map((row) => row.uncertainty.status),
+  );
+  if (
+    (manifest.uncertainty_status === 'unavailable_not_calibrated' &&
+      (availableUncertaintyStatuses.size > 1 || availableUncertaintyStatuses.has('calibrated'))) ||
+    (manifest.uncertainty_status === 'calibrated' &&
+      (availableRows.length === 0 || availableUncertaintyStatuses.size !== 1 ||
+        !availableUncertaintyStatuses.has('calibrated'))) ||
+    !['unavailable_not_calibrated', 'calibrated'].includes(manifest.uncertainty_status)
+  ) {
+    fail('uncertainty_contract_mismatch', 'uncertainty_status',
+      'Manifest uncertainty status must exactly describe every available row.');
+  }
+  // The manifest cannot declare calibration either — otherwise a rows-free
+  // document could assert a calibrated publication the row check never sees.
+  if (manifest.uncertainty_status === 'calibrated') {
+    fail('calibrated_uncertainty_unsupported', 'uncertainty_status',
+      'This contract is point-only: a publication may not declare calibrated uncertainty.');
+  }
+
+  // Ranks: unique, contiguous 1..N, and consistent with the documented ordering.
+  const ranks = availableRows.map((r) => r.rank).filter((r) => Number.isInteger(r) && r >= 1);
+  if (new Set(ranks).size !== ranks.length) {
+    fail('rank_not_unique', 'rows', 'Ranks must be unique among available rows.');
+  }
+  if (ranks.length === availableRows.length && availableRows.length > 0) {
+    const sorted = [...ranks].sort((a, b) => a - b);
+    const contiguous = sorted.every((rank, index) => rank === index + 1);
+    if (!contiguous) {
+      fail('rank_not_contiguous', 'rows', 'Ranks must be contiguous 1..N over available rows.');
+    } else {
+      const expected = [...availableRows].sort((a, b) => {
+        if (b.point_forecast !== a.point_forecast) return b.point_forecast - a.point_forecast;
+        return compareForwardCanonicalStrings(
+          a.identity.canonical_player_id,
+          b.identity.canonical_player_id,
+        );
+      });
+      expected.forEach((row, index) => {
+        if (row.rank !== index + 1) {
+          fail('rank_ordering_violated', 'rows',
+            `Rank ${row.rank} violates ${WEEKLY_RANK_ORDERING_RULE}; expected ${index + 1}.`);
+        }
+      });
+    }
+  }
+
+  // --- lifecycle ----------------------------------------------------------
+  if (manifest.lifecycle?.consumer_eligibility !== WEEKLY_DEFAULT_CONSUMER_ELIGIBILITY) {
+    fail('manifest_lifecycle_claims_eligibility', 'lifecycle.consumer_eligibility',
+      'A manifest may never self-declare consumer eligibility; admission requires a receipt.');
+  }
+  if (!(WEEKLY_MANIFEST_LIFECYCLE_STATES as readonly string[]).includes(manifest.lifecycle?.state)) {
+    fail('manifest_lifecycle_claims_eligibility', 'lifecycle.state',
+      'A manifest may only declare draft or candidate.');
+  }
+  if (manifest.lifecycle?.admission_requires_receipt !== true) {
+    fail('manifest_lifecycle_claims_eligibility', 'lifecycle.admission_requires_receipt',
+      'A weekly publication always requires a separately trusted receipt.');
+  }
+  if (
+    manifest.reliability_tracking?.truth_label_owner !== 'TIBER-Data' ||
+    manifest.reliability_tracking?.truth_label_artifact_kind !== 'realized_weekly_ppr_outcomes' ||
+    manifest.reliability_tracking?.forge_role !== 'explanatory_context_only' ||
+    manifest.reliability_tracking?.forge_is_truth_label !== false ||
+    manifest.reliability_tracking?.truth_label_ref !== null ||
+    manifest.reliability_tracking?.scored_at !== null
+  ) {
+    fail('reliability_contract_invalid', 'reliability_tracking',
+      'Pre-week publication truth remains unscored, TIBER-Data-owned, and FORGE explanatory only.');
+  }
+
+  // --- digests ------------------------------------------------------------
+  const recomputedRowsDigest = canonicalForwardJsonSha256(rows);
+  if (manifest.digests?.player_rows_sha256 !== recomputedRowsDigest) {
+    fail('player_rows_digest_mismatch', 'digests.player_rows_sha256',
+      'Declared player-rows digest does not match the supplied rows.');
+  }
+  if (
+    manifest.digests?.serialization?.serializer_id !== WEEKLY_SERIALIZER_ID ||
+    manifest.digests?.serialization?.serializer_version !== WEEKLY_SERIALIZER_VERSION
+  ) {
+    fail('serializer_identity_invalid', 'digests.serialization',
+      'Publication must use the canonical serializer identity and version.');
+  }
+  if (
+    manifest.outputs?.length !== 1 ||
+    manifest.outputs[0]?.artifact_type !== WEEKLY_PLAYER_ROWS_ARTIFACT_TYPE ||
+    manifest.outputs[0]?.artifact_version !== WEEKLY_PLAYER_ROWS_ARTIFACT_VERSION ||
+    !manifest.outputs[0]?.uri_or_path ||
+    manifest.outputs[0]?.content_sha256 !== recomputedRowsDigest
+  ) {
+    fail('output_binding_invalid', 'outputs',
+      'Exactly one canonical player-rows output must bind the supplied rows digest.');
+  }
+
+  const contentHashes: Array<[string, string | null | undefined]> = [
+    ['population_census.census_sha256', manifest.population_census?.census_sha256],
+    ['population_census.census_artifact_ref.content_sha256',
+      manifest.population_census?.census_artifact_ref?.content_sha256],
+    ['scoring_profile.profile_sha256', manifest.scoring_profile?.profile_sha256],
+    ['scoring_profile.source_reconciliation.evidence_ref.content_sha256',
+      manifest.scoring_profile?.source_reconciliation?.evidence_ref?.content_sha256],
+    ['model.implementation_commit_evidence_sha256',
+      manifest.model?.implementation_commit_evidence_sha256],
+    ['model.configuration_sha256', manifest.model?.configuration_sha256],
+    ['model.feature_configuration_sha256', manifest.model?.feature_configuration_sha256],
+    ['model.fitted_model_ref.content_sha256', manifest.model?.fitted_model_ref?.content_sha256],
+    ['digests.player_rows_sha256', manifest.digests?.player_rows_sha256],
+    ...inputs.map((input, index) =>
+      [`artifact_inputs[${index}].content_sha256`, input.content_sha256] as [string, string]),
+    ...(manifest.outputs ?? []).map((output, index) =>
+      [`outputs[${index}].content_sha256`, output.content_sha256] as [string, string]),
+    ...rows.map((row, index) =>
+      [`rows[${index}].identity.source_identity_ref.content_sha256`,
+        row.identity?.source_identity_ref?.content_sha256] as [string, string | null]),
+  ];
+  for (const [path, value] of contentHashes) {
+    if (value !== undefined && value !== null && !WEEKLY_SHA256_PATTERN.test(value)) {
+      fail('invalid_sha256', path, 'Expected a lowercase 64-character SHA-256.');
+    }
+  }
+
+  // --- example vs real ----------------------------------------------------
+  if (!isExample) {
+    const strings: string[] = [];
+    collectStrings(manifest, strings);
+    collectStrings(rows, strings);
+    for (const value of strings) {
+      const lower = value.toLowerCase();
+      for (const marker of WEEKLY_EXAMPLE_MARKERS) {
+        if (lower.includes(marker)) {
+          fail('example_marker_in_real_publication', 'manifest',
+            `A real publication may not contain example/placeholder marker "${marker}" (found in "${value.slice(0, 60)}").`);
+          break;
+        }
+      }
+      if (WEEKLY_PLACEHOLDER_HASH_PATTERN.test(value)) {
+        fail('placeholder_hash_in_real_publication', 'manifest',
+          'A real publication may not carry a placeholder hash.');
+      }
+    }
+    for (const [index, input] of inputs.entries()) {
+      if (!WEEKLY_COMMIT_SHA_PATTERN.test(input.owner_commit_sha) ||
+          /^0{40}$/.test(input.owner_commit_sha)) {
+        fail('placeholder_commit_in_real_publication', `artifact_inputs[${index}].owner_commit_sha`,
+          'A real publication requires a genuine 40-character owner commit SHA.');
+      }
+    }
+    if (
+      !WEEKLY_COMMIT_SHA_PATTERN.test(manifest.model?.implementation_commit_sha ?? '') ||
+      /^0{40}$/.test(manifest.model?.implementation_commit_sha ?? '')
+    ) {
+      fail('placeholder_commit_in_real_publication', 'model.implementation_commit_sha',
+        'A real publication requires a genuine Forecast implementation commit SHA.');
+    }
+  }
+
+  return {
+    validator_id: 'tiber-weekly-forecast-publication-validator',
+    validator_version: '3.0.0',
+    valid: errors.length === 0,
+    promotion_authority: false,
+    is_schema_example: isExample,
+    errors,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Discriminants
+// ---------------------------------------------------------------------------
+
+export function isWeeklySchemaExampleDocument(value: unknown): boolean {
+  return isRecord(value) &&
+    value.artifact_type === WEEKLY_PUBLICATION_ARTIFACT_TYPE &&
+    value.artifact_version === WEEKLY_PUBLICATION_SCHEMA_EXAMPLE_VERSION;
+}
+
+export function isWeeklyPublicationDocument(value: unknown): boolean {
+  return isRecord(value) &&
+    value.artifact_type === WEEKLY_PUBLICATION_ARTIFACT_TYPE &&
+    value.artifact_version === WEEKLY_PUBLICATION_ARTIFACT_VERSION;
+}
+
+// ---------------------------------------------------------------------------
+// Consumer admission seam
+// ---------------------------------------------------------------------------
+
+export type WeeklyAdmissionDecision =
+  | {
+      admit: true;
+      source: 'forecast_weekly_publication';
+      publication_id: string;
+      manifest_sha256: string;
+      available_row_count: number;
+    }
+  | { admit: false; source: null; reason: string; errors: readonly WeeklyValidationIssue[] };
+
+/**
+ * The decision TIBER-Fantasy must make, from untrusted bytes.
+ *
+ * Accepts `unknown` for all three documents. Any refusal yields `source: null`
+ * — there is deliberately **no FORGE fallback here**; an unavailable Forecast
+ * publication produces an explicit unavailable state and the consumer decides
+ * what to render.
+ */
+export function admitWeeklyPublication(
+  manifestInput: unknown,
+  rowsInput: unknown,
+  receiptInput: unknown,
+  context: WeeklyVerificationContext = {},
+): WeeklyAdmissionDecision {
+  const refuse = (reason: string, errors: readonly WeeklyValidationIssue[] = []) =>
+    ({ admit: false as const, source: null, reason, errors });
+
+  const parsedManifest = parseWeeklyPublicationManifest(manifestInput);
+  if (!parsedManifest.ok) return refuse('manifest_malformed', parsedManifest.errors);
+
+  const parsedRows = parseWeeklyPlayerRows(rowsInput);
+  if (!parsedRows.ok) return refuse('rows_malformed', parsedRows.errors);
+
+  const manifest = parsedManifest.value;
+  const rows = parsedRows.value;
+
+  if (isWeeklySchemaExampleDocument(manifest)) {
+    return refuse('schema_example_not_a_publication');
+  }
+  if (!isWeeklyPublicationDocument(manifest)) {
+    return refuse('unrecognised_artifact');
+  }
+
+  const validation = validateWeeklyPublication(manifest, rows, context);
+  if (!validation.valid) return refuse('contract_invalid', validation.errors);
+
+  const parsedReceipt = parseWeeklyAdmissionReceipt(receiptInput);
+  if (!parsedReceipt.ok) return refuse('admission_receipt_missing_or_malformed', parsedReceipt.errors);
+  const receipt = parsedReceipt.value;
+
+  // The receipt is not its own authority. Its exact digest and decision source
+  // must be pinned outside the request documents by the consuming deployment.
+  const trusted = context.admission_authority;
+  if (!trusted) return refuse('trusted_admission_binding_missing');
+  if (
+    !WEEKLY_SHA256_PATTERN.test(trusted.receipt_sha256) ||
+    !WEEKLY_SHA256_PATTERN.test(trusted.decision_ref_content_sha256) ||
+    !trusted.authority_id || !trusted.authority_repository ||
+    !trusted.decision_ref_uri_or_path || !trusted.decision_ref_record_id
+  ) return refuse('trusted_admission_binding_malformed');
+  const receiptDigest = weeklyAdmissionReceiptSha256(receipt);
+  if (receiptDigest !== trusted.receipt_sha256) return refuse('receipt_not_trusted');
+  if (
+    receipt.authority_id !== trusted.authority_id ||
+    receipt.authority_repository !== trusted.authority_repository ||
+    receipt.decision_ref.uri_or_path !== trusted.decision_ref_uri_or_path ||
+    receipt.decision_ref.content_sha256 !== trusted.decision_ref_content_sha256 ||
+    receipt.decision_ref.record_id !== trusted.decision_ref_record_id
+  ) return refuse('receipt_authority_mismatch');
+
+  if (receipt.document_kind !== 'weekly_publication_admission_receipt') {
+    return refuse('receipt_identity_invalid');
+  }
+  if (receipt.consumer_eligibility !== 'eligible_admitted') return refuse('receipt_not_eligible');
+  if (receipt.admission_path !== 'governed_preseason_publication') return refuse('receipt_wrong_admission_path');
+  if (receipt.in_season_gate_weakened !== false) return refuse('receipt_weakened_in_season_gate');
+  if (receipt.publication_id !== manifest.publication_id) return refuse('receipt_publication_id_mismatch');
+  if (
+    !isCanonicalUtc(receipt.decided_at) ||
+    new Date(receipt.decided_at).getTime() < new Date(manifest.generated_at).getTime() ||
+    // The receipt is the FIRST independently trusted binding of these bytes, so
+    // capping only the manifest's own timestamps caps nothing an author
+    // controls. An uncapped decision lets bytes be authored after kickoff -- or
+    // after Week 1 finishes, with results in hand -- carry backdated manifest
+    // timestamps, and still be admitted through the preseason path.
+    new Date(receipt.decided_at).getTime() >
+      new Date(WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC).getTime() ||
+    !WEEKLY_SHA256_PATTERN.test(receipt.manifest_sha256) ||
+    !WEEKLY_SHA256_PATTERN.test(receipt.player_rows_sha256) ||
+    !WEEKLY_SHA256_PATTERN.test(receipt.decision_ref.content_sha256) ||
+    WEEKLY_PLACEHOLDER_HASH_PATTERN.test(receipt.decision_ref.content_sha256) ||
+    !receipt.decision_ref.record_id ||
+    !receipt.decided_by
+  ) return refuse('receipt_decision_evidence_invalid');
+
+  const receiptStrings: string[] = [];
+  collectStrings(receipt, receiptStrings);
+  if (receiptStrings.some((value) =>
+    WEEKLY_PLACEHOLDER_HASH_PATTERN.test(value) ||
+    WEEKLY_EXAMPLE_MARKERS.some((marker) => value.toLowerCase().includes(marker)))) {
+    return refuse('receipt_example_or_placeholder_content');
+  }
+
+  // The binding: the receipt admits exactly these bytes and no others.
+  const manifestDigest = weeklyManifestSha256(manifest);
+  if (receipt.manifest_sha256 !== manifestDigest) return refuse('receipt_manifest_digest_mismatch');
+  if (receipt.player_rows_sha256 !== canonicalForwardJsonSha256(rows)) {
+    return refuse('receipt_rows_digest_mismatch');
+  }
+
+  return {
+    admit: true,
+    source: 'forecast_weekly_publication',
+    publication_id: manifest.publication_id,
+    manifest_sha256: manifestDigest,
+    available_row_count: rows.filter((r) => r.forecast_status === 'forecast_available').length,
+  };
+}
