@@ -252,7 +252,7 @@ So each reason is bound to whatever independently verifies it:
 
 | Reason | Rejected when |
 | --- | --- |
-| `identity_unresolved`, `identity_conflicting` | the verified census resolves the row to a canonical id, or the row itself declares `identity_status: 'resolved'` |
+| `identity_unresolved`, `identity_conflicting` | the verified census resolves the row to a canonical id, or the row's own `identity_status` is not the exact matching state (`unresolved` / `conflicting` respectively) — the crossed pairings are distinct states feeding published coverage counts |
 | `unavailable_missing_required_inputs` | every required input carries verified membership **and** all of them hold an eligible record for the row |
 | `no_prior_season_history` | a verified `prior_season_realized_outcomes` or `prior_season_usage_and_role` input holds an eligible record for the row |
 | `unsupported_position_domain` | the **verified census** assigns the row a supported offensive position |
@@ -320,8 +320,9 @@ Inability to suppress a player is not inability to change the forecast.
 sets its own `status: 'passed'`, repeats its own input hashes, and cites any
 syntactically valid reference. A real publication must supply
 `verified_scoring_reconciliation` carrying the verified result, the exact
-evidence digest the manifest cites, the canonical profile digest, and the input
-digests that artifact actually covers. That last field is what stops a genuine
+evidence digest the manifest cites, the validator id and version that produced
+it, the canonical profile digest, and the input digests that artifact actually
+covers. That last field is what stops a genuine
 `passed` reconciliation for one input set being cited for another — the
 manifest's own coverage copy sits on both sides of the earlier comparison, so it
 cannot detect the substitution. It remains load-bearing even now that every
