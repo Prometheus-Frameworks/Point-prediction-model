@@ -473,6 +473,10 @@ function exampleCensusContext(
       semantics_ref: forManifest.population_census.semantics_ref,
       source_uri_or_path: forManifest.population_census.census_artifact_ref.uri_or_path,
       census_sha256: PLACEHOLDER_SHA,
+      census_artifact_ref: {
+        artifact_type: forManifest.population_census.census_artifact_ref.artifact_type,
+        artifact_version: forManifest.population_census.census_artifact_ref.artifact_version,
+      },
     },
     census: {
       census_sha256: PLACEHOLDER_SHA,

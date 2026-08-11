@@ -1297,15 +1297,16 @@ export interface WeeklyVerificationContext {
   };
   expected_census_identity?: {
     /**
-     * Optional artifact type/version pin for the census reference — all or
-     * nothing.
+     * Artifact type/version pin for the census reference. MANDATORY.
      *
-     * Two independently optional fields made a PARTIAL pin representable, and
-     * a partial pin is silently no pin: supplying only the version left the
-     * comparison skipped entirely. Grouping them means the only two states are
-     * "pinned" and "not pinned".
+     * Two revisions were needed to get this right. First it was two
+     * independently optional fields, which made a PARTIAL pin representable —
+     * and a partial pin is silently no pin. Grouping them removed that, but
+     * left the group itself optional, so omitting it skipped the comparison
+     * entirely and a publisher could relabel the census artifact type or
+     * version against the same governed digest. An optional pin is no pin.
      */
-    census_artifact_ref?: {
+    census_artifact_ref: {
       artifact_type: string;
       artifact_version: string;
     };
@@ -2064,8 +2065,11 @@ export function validateWeeklyPublication(
       // verified. Compared against the manifest only — these fields describe
       // the reference the manifest cites, and the loaded census carries the
       // bytes rather than the citation.
-      if (
-        expected.census_artifact_ref &&
+      if (!expected.census_artifact_ref) {
+        fail('census_provenance_ungoverned', 'population_census.census_artifact_ref',
+          'Admission requires a consumer-owned expected census artifact type and version; ' +
+          'omitting the pin skips the comparison entirely.');
+      } else if (
         (expected.census_artifact_ref.artifact_type !==
            manifest.population_census?.census_artifact_ref?.artifact_type ||
          expected.census_artifact_ref.artifact_version !==

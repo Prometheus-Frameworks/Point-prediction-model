@@ -165,6 +165,10 @@ function censusContext(
       semantics_ref: forManifest.population_census.semantics_ref,
       source_uri_or_path: forManifest.population_census.census_artifact_ref.uri_or_path,
       census_sha256: forManifest.population_census.census_sha256,
+      census_artifact_ref: {
+        artifact_type: forManifest.population_census.census_artifact_ref.artifact_type,
+        artifact_version: forManifest.population_census.census_artifact_ref.artifact_version,
+      },
     },
     census: {
       census_sha256: forManifest.population_census.census_sha256,
@@ -2176,14 +2180,18 @@ describe('adversarial: 30 — a partial pin is not representable', () => {
     }
   });
 
-  it('treats the pin as absent only when the whole object is absent', () => {
+  it('refuses an omitted pin rather than skipping the comparison', () => {
+    // This previously asserted the opposite: that omitting the whole object
+    // meant "not pinned" and skipped the check. Making the pin all-or-nothing
+    // removed the PARTIAL state but left absence permitted, which is the same
+    // hole one level up — an optional pin is no pin.
     const { manifest: real, rows: realRows } = realisedManifest();
     const context = censusContext(realRows, real);
     const identity = { ...context.expected_census_identity! };
     delete (identity as any).census_artifact_ref;
     expect(codes(validateWeeklyPublication(real, realRows, {
-      ...context, expected_census_identity: identity,
-    }))).not.toContain('census_provenance_ungoverned');
+      ...context, expected_census_identity: identity as any,
+    }))).toContain('census_provenance_ungoverned');
   });
 });
 
@@ -2364,6 +2372,19 @@ describe('adversarial: 36 — census identity state binds available rows too', (
     next.status_counts = { ...next.status_counts };
     for (const key of Object.keys(next.status_counts)) next.status_counts[key] = 0;
     next.status_counts.forecast_available = rowsOnly.length;
+    // Input counts must be recomputed for the REDUCED row set. Leaving them at
+    // the full fixture's values made the "valid baseline" return three
+    // input_verification_binding_mismatch errors, and the positive test below
+    // passed anyway because it only asserted the absence of one unrelated code.
+    next.artifact_inputs = next.artifact_inputs.map((input: any) => ({
+      ...input,
+      cutoff_evidence: {
+        ...input.cutoff_evidence,
+        record_count_eligible: eligibleRowIdsFor(input.input_class, rowsOnly).length,
+      },
+    }));
+    next.scoring_profile.source_reconciliation.source_input_sha256s =
+      [...new Set(next.artifact_inputs.map((i: any) => i.content_sha256))];
     next.digests.player_rows_sha256 = canonicalForwardJsonSha256(rowsOnly);
     next.outputs[0].content_sha256 = next.digests.player_rows_sha256;
     return { manifest: next as WeeklyForecastPublicationManifest, rows: rowsOnly };
@@ -2390,8 +2411,13 @@ describe('adversarial: 36 — census identity state binds available rows too', (
   });
 
   it('admits an available-only publication whose states match', () => {
+    // Asserts FULL validity, not merely the absence of one error code. The
+    // weaker assertion let an invalid baseline masquerade as a positive
+    // control — the same fixture-property trap this describe block exists to
+    // avoid.
     const { manifest, rows } = availableOnly();
-    expect(codes(validateWeeklyPublication(manifest, rows, censusContext(rows, manifest))))
-      .not.toContain('identity_evidence_unbound');
+    const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
   });
 });

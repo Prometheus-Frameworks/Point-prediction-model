@@ -293,10 +293,12 @@ repository or producing commit records provenance that nothing verified. This
 applies to the input pins, the fitted-model reference, the reconciliation
 evidence reference, and the census artifact reference.
 
-The rule applies to the pin SHAPES as well as the values they compare. The
-census artifact pin is a single optional object rather than two independently
-optional fields, because two optional fields make a partial pin representable —
-and a partial pin is silently no pin.
+The rule applies to the pin SHAPES as well as the values they compare, and it
+took two revisions to get the census artifact pin right. It began as two
+independently optional fields, which made a *partial* pin representable — and a
+partial pin is silently no pin. Grouping them into one object removed that, but
+left the group optional, so omitting it skipped the comparison entirely — an
+*optional* pin is likewise no pin. It is now a single mandatory object.
 
 Two further trust anchors are consumer-owned rather than manifest-derived.
 
