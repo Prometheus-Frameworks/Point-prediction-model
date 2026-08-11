@@ -1232,11 +1232,22 @@ export interface WeeklyVerificationContext {
    */
   verified_model_execution?: {
     status: 'succeeded' | 'failed';
+    model_id: string;
+    model_version: string;
     implementation_commit_sha: string;
+    implementation_commit_evidence_sha256: string;
     configuration_sha256: string;
     feature_configuration_sha256: string;
     fitted_model_sha256: string;
-    input_sha256s: readonly string[];
+    /**
+     * input_id → the content digest the run consumed under that id.
+     *
+     * A deduplicated hash SET cannot express this: where two admitted inputs
+     * share a digest it collapses them, so a run consuming one logical source
+     * passes as having consumed both — and it can never show that a digest was
+     * consumed under the RIGHT id, so a misassigned feature source is invisible.
+     */
+    input_digests_by_input_id: Readonly<Record<string, string>>;
     player_rows_sha256: string;
   };
   verified_scoring_reconciliation?: {
@@ -1594,29 +1605,40 @@ export function validateWeeklyPublication(
   // the exact inputs, and the exact output rows.
   if (!isExample) {
     const run = context.verified_model_execution;
-    const admittedInputHashes = [...new Set((manifest.artifact_inputs ?? []).map((i) => i.content_sha256))]
-      .sort(compareForwardCanonicalStrings);
+    const admittedInputDigestsByInputId = Object.fromEntries(
+      (manifest.artifact_inputs ?? []).map((i) => [i.input_id, i.content_sha256]),
+    );
     if (!run) {
       fail('model_execution_unverified', 'verification_context.verified_model_execution',
         'Admission requires an independently verified model execution; declared model identity ' +
         'is shape, not evidence that these rows were produced by that model.');
     } else if (
       run.status !== 'succeeded' ||
+      // The FULL declared identity, not just the hashes. Leaving model_id,
+      // model_version and the commit evidence digest unbound let a publication
+      // relabel its lineage while an unchanged execution still validated,
+      // recording model provenance the run never verified.
+      run.model_id !== model?.model_id ||
+      run.model_version !== model?.model_version ||
       run.implementation_commit_sha !== model?.implementation_commit_sha ||
+      run.implementation_commit_evidence_sha256 !== model?.implementation_commit_evidence_sha256 ||
       run.configuration_sha256 !== model?.configuration_sha256 ||
       run.feature_configuration_sha256 !== model?.feature_configuration_sha256 ||
       run.fitted_model_sha256 !== model?.fitted_model_ref?.content_sha256
     ) {
       fail('model_execution_unverified', 'verification_context.verified_model_execution',
-        'The verified execution does not report success for the exact model, configuration, ' +
-        'features and fitted artifact this publication declares.');
+        'The verified execution does not report success for the exact model identity, ' +
+        'configuration, features and fitted artifact this publication declares.');
     } else if (
-      canonicalForwardJsonSha256(
-        [...new Set(run.input_sha256s ?? [])].sort(compareForwardCanonicalStrings),
-      ) !== canonicalForwardJsonSha256(admittedInputHashes)
+      // Compared as an id→digest MAP, never as a deduplicated hash set: the set
+      // collapses inputs that share a digest, and cannot bind a digest to the
+      // id under which it was consumed.
+      canonicalForwardJsonSha256(run.input_digests_by_input_id ?? {}) !==
+        canonicalForwardJsonSha256(admittedInputDigestsByInputId)
     ) {
       fail('model_execution_unverified', 'verification_context.verified_model_execution',
-        'The verified execution consumed a different input set than the publication admits.');
+        'The verified execution did not consume exactly the admitted inputs, each under the ' +
+        'input id the publication declares.');
     } else if (run.player_rows_sha256 !== manifest.digests?.player_rows_sha256) {
       // The run must have produced THESE rows. Without this the execution could
       // be genuine and the published rows still substituted afterwards.

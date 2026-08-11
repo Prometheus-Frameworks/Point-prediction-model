@@ -136,11 +136,16 @@ function censusContext(
     ),
     verified_model_execution: {
       status: 'succeeded' as const,
+      model_id: forManifest.model.model_id,
+      model_version: forManifest.model.model_version,
       implementation_commit_sha: forManifest.model.implementation_commit_sha,
+      implementation_commit_evidence_sha256: forManifest.model.implementation_commit_evidence_sha256,
       configuration_sha256: forManifest.model.configuration_sha256,
       feature_configuration_sha256: forManifest.model.feature_configuration_sha256,
       fitted_model_sha256: forManifest.model.fitted_model_ref?.content_sha256 ?? '',
-      input_sha256s: [...new Set(forManifest.artifact_inputs.map((i) => i.content_sha256))],
+      input_digests_by_input_id: Object.fromEntries(
+        forManifest.artifact_inputs.map((i) => [i.input_id, i.content_sha256]),
+      ),
       player_rows_sha256: forManifest.digests.player_rows_sha256,
     },
     verified_scoring_reconciliation: {
@@ -220,10 +225,14 @@ function realisedManifest(rowSet: readonly WeeklyPlayerRow[] = rows) {
     content_sha256: REAL_SHA,
   };
   next.limitations = ['Point-only output; no calibrated interval is available.'];
-  next.artifact_inputs = next.artifact_inputs.map((input: any) => ({
+  next.artifact_inputs = next.artifact_inputs.map((input: any, index: number) => ({
     ...input,
     owner_commit_sha: REAL_COMMIT,
-    content_sha256: REAL_SHA,
+    // DISTINCT per input. Giving every input the same digest collapsed the
+    // execution's input set to one element, so a run consuming a single source
+    // passed as having consumed all of them — the harness was hiding the very
+    // gap the execution binding exists to close.
+    content_sha256: `${index + 2}`.repeat(63) + 'a',
     uri_or_path: `tiber-data://${input.input_class}`,
     cutoff_evidence: {
       ...input.cutoff_evidence,
@@ -245,7 +254,7 @@ function realisedManifest(rowSet: readonly WeeklyPlayerRow[] = rows) {
       content_sha256: REAL_SHA,
     },
     scoring_profile_sha256: next.scoring_profile.profile_sha256,
-    source_input_sha256s: [REAL_SHA],
+    source_input_sha256s: [...new Set(next.artifact_inputs.map((i: any) => i.content_sha256))],
   };
   next.outputs = next.outputs.map((output: any) => ({
     ...output,
@@ -1950,7 +1959,7 @@ describe('adversarial: 25 — the model execution is verified, not declared', ()
       ...context,
       verified_model_execution: {
         ...context.verified_model_execution!,
-        input_sha256s: ['e'.repeat(63) + 'b'],
+        input_digests_by_input_id: { 'some-other-input': 'e'.repeat(63) + 'b' },
       },
     }))).toContain('model_execution_unverified');
   });
@@ -1975,5 +1984,68 @@ describe('adversarial: 25 — the model execution is verified, not declared', ()
       ...context,
       verified_model_execution: { ...context.verified_model_execution!, status: 'failed' },
     }))).toContain('model_execution_unverified');
+  });
+});
+
+describe('adversarial: 26 — the execution binding preserves input identity', () => {
+  it('the harness gives each input a distinct digest', () => {
+    // Guards the guard. When every input shared a digest, the execution's input
+    // set collapsed to one element and a run consuming a single source passed
+    // as having consumed all of them — the coverage looked real and was not.
+    const { manifest: real } = realisedManifest();
+    const digests = real.artifact_inputs.map((i) => i.content_sha256);
+    expect(new Set(digests).size).toBe(digests.length);
+    expect(digests.length).toBeGreaterThan(1);
+  });
+
+  it('refuses an execution that consumed only one of several admitted inputs', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const full = context.verified_model_execution!.input_digests_by_input_id;
+    const firstId = Object.keys(full)[0];
+    expect(codes(validateWeeklyPublication(real, realRows, {
+      ...context,
+      verified_model_execution: {
+        ...context.verified_model_execution!,
+        input_digests_by_input_id: { [firstId]: full[firstId] },
+      },
+    }))).toContain('model_execution_unverified');
+  });
+
+  it('refuses an execution that consumed the right digests under the wrong ids', () => {
+    // A misassigned feature source: every digest present, each bound to the
+    // wrong input. A hash-only set could never see this.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const full = context.verified_model_execution!.input_digests_by_input_id;
+    const ids = Object.keys(full);
+    const rotated = Object.fromEntries(
+      ids.map((id, i) => [id, full[ids[(i + 1) % ids.length]]]),
+    );
+    expect(codes(validateWeeklyPublication(real, realRows, {
+      ...context,
+      verified_model_execution: {
+        ...context.verified_model_execution!,
+        input_digests_by_input_id: rotated,
+      },
+    }))).toContain('model_execution_unverified');
+  });
+});
+
+describe('adversarial: 27 — the execution binds the full declared model identity', () => {
+  it.each([
+    ['model_id', 'other-model'],
+    ['model_version', '9.9.9'],
+    ['implementation_commit_evidence_sha256', 'b'.repeat(63) + 'c'],
+  ] as const)('refuses when the publication relabels %s', (field, value) => {
+    // Relabelling lineage while keeping the same commit, configuration and
+    // fitted hashes left the execution binding satisfied, so admission recorded
+    // model provenance the run never verified.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const relabelled = clone(real) as any;
+    relabelled.model[field] = value;
+    relabelled.digests.player_rows_sha256 = canonicalForwardJsonSha256(realRows);
+    expect(codes(validateWeeklyPublication(relabelled, realRows, censusContext(realRows, real))))
+      .toContain('model_execution_unverified');
   });
 });

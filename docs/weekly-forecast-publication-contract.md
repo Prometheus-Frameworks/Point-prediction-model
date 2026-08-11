@@ -302,9 +302,16 @@ that the reconciliation actually covers it.
 checked for shape alone — any well-formed commit and digest passes — so a
 correctly pinned authority receipt could admit arbitrary projections labelled
 `model-inference`. A real publication must supply `verified_model_execution`
-reporting success for the exact model, configuration, features and fitted
-artifact, consuming exactly the admitted inputs, and producing exactly the
-published rows digest. That last binding is what stops a genuine run being cited
+reporting success for the **full** declared model identity — `model_id`,
+`model_version`, implementation commit and its evidence digest, configuration,
+features and fitted artifact — consuming exactly the admitted inputs, and
+producing exactly the published rows digest.
+
+Inputs are compared as an `input_id` → digest **map**, never as a deduplicated
+hash set. A set collapses inputs that share a digest, so a run consuming one
+logical source would pass as having consumed several; and a set can never show
+that a digest was consumed under the *right* id, so a misassigned feature source
+would be invisible. That last binding is what stops a genuine run being cited
 while the rows are substituted afterwards.
 
 The verification context also carries the census's own `effective_at`, read from
