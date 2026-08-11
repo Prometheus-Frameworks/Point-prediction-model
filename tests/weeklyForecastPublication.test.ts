@@ -2349,6 +2349,38 @@ describe('the public context documentation matches the validator', () => {
     expect(block).toContain('EVERY admitted input class');
     expect(block).not.toMatch(/for each REQUIRED input class/);
   });
+
+  /**
+   * Strips JSDoc/Markdown comment leaders and collapses whitespace so a claim
+   * cannot hide from a text guard by wrapping across lines.
+   */
+  const flatten = (text: string) => text.replace(/^[ \t]*\*[ \t]?/gm, '').replace(/\s+/g, ' ');
+
+  it('flattening exposes a claim split by a comment leader', () => {
+    // Negative control for the guard below. The first version of that guard
+    // matched raw source, so the ` * ` between the wrapped words made it pass
+    // against the exact comment it was written to forbid — green, pinning
+    // nothing. This asserts the normalisation is what makes it bite.
+    const wrapped = 'declares input set B. Optional inputs are not\n     * consumer-pinned — they';
+    const claim = /[Oo]ptional (inputs|classes) are not (consumer-)?pinned/;
+    expect(wrapped).not.toMatch(claim);
+    expect(flatten(wrapped)).toMatch(claim);
+  });
+
+  it('nowhere claims optional inputs are unpinned', () => {
+    // Scoping the guard above to ONE comment block missed a second copy of the
+    // same stale claim elsewhere in the file. The check is the whole file, and
+    // the contract document too — the claim is wrong wherever it appears.
+    const doc = readFileSync(
+      path.join(repoRoot, 'docs/weekly-forecast-publication-contract.md'),
+      'utf8',
+    );
+    for (const text of [source, doc]) {
+      expect(flatten(text)).not.toMatch(
+        /[Oo]ptional (inputs|classes) are not (consumer-)?pinned/,
+      );
+    }
+  });
 });
 
 describe('adversarial: 36 — census identity state binds available rows too', () => {

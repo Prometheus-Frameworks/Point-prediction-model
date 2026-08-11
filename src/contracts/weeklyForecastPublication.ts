@@ -1289,9 +1289,11 @@ export interface WeeklyVerificationContext {
      *
      * Without it, the admitted-hash comparison runs entirely on manifest-owned
      * copies, so a genuine `passed` artifact covering input set A can be cited
-     * while the manifest declares input set B. Optional inputs are not
-     * consumer-pinned — they cannot suppress a player — which is exactly what
-     * makes swapping one and reusing an unrelated reconciliation reachable.
+     * while the manifest declares input set B.
+     *
+     * This remains load-bearing now that every admitted input class is
+     * consumer-pinned: the pins establish WHICH artifact was used, and this
+     * establishes that the reconciliation actually covers it.
      */
     source_input_sha256s: readonly string[];
   };
