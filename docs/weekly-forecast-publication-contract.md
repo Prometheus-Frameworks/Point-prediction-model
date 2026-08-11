@@ -235,9 +235,30 @@ unique, contiguous `1..N`, and consistent with the documented ordering
 player id ascending). Unavailable rows carry no rank or point forecast and at
 least one typed reason.
 
+### A reason is a typed record, not a string
+
+`status_reasons` used to be a list of bare strings, checked only for being
+non-empty. A fully verified run could therefore publish
+`unavailable_missing_required_inputs` next to an unrelated or invented reason,
+and a consumer had no way to learn which required input actually failed.
+
+Each reason is now the governed record shape (§4 `status_reasons[]`):
+
+| field | bound to |
+|---|---|
+| `dimension` | `identity` / `population_eligibility` / `position_domain` / `required_input`, and must be the dimension the row's governed status belongs to |
+| `input_id` | required for `required_input`, null for every other dimension; must name a **declared required input** whose verified membership does *not* hold the row |
+| `code` | non-empty, otherwise **producer-native and deliberately unconstrained** |
+
+`code` is left free for a reason. Nothing in this contract can verify a
+finer-grained code, and a closed list invented here would be shape masquerading
+as evidence — the defect this contract exists to avoid. What is checked is
+everything around it, which is what a consumer actually needs: the reason is
+about the right dimension, and it names an input that genuinely failed.
+
 ### An unavailability reason loses to the evidence
 
-A typed reason is not merely a well-formed string: it is a **claim about the
+A typed reason is not merely a well-formed record: it is a **claim about the
 evidence**, and the validator checks it against the evidence rather than
 accepting it.
 
@@ -429,6 +450,13 @@ cannot detect the substitution. It remains load-bearing even now that every
 input is pinned: the pins establish which artifact was used, this establishes
 that the reconciliation actually covers it.
 
+Coverage is carried as an **`input_id` → digest map**
+(`source_input_digests_by_input_id`), never a deduplicated hash set — the same
+correction the model-execution binding already carries. Two admitted inputs may
+legitimately share a content digest; a set collapses them, so a reconciliation
+covering one logical source passed as covering both, and a set can never show
+that a digest was covered under the id it was consumed under.
+
 **The model execution is verified, not declared.** Model identity is otherwise
 checked for shape alone — any well-formed commit and digest passes — so a
 correctly pinned authority receipt could admit arbitrary projections labelled
@@ -536,8 +564,8 @@ timestamp is a declared constant. Repeated runs produce byte-identical output.
 Current fixture digests:
 
 ```
-manifest_sha256    = e0a18c474382f6b221345b487e8a8400239923edf49114166cc8900c79c71ec6
-player_rows_sha256 = 68b219b30b21e618a2c3c06e04e6607395a1bf07f2da7afde0b3b8a0b95759c5
+manifest_sha256    = 9c4a64fd56797b2938443d93f3ac32c0fe3cf48f603de05fec6bfb1104a5424a
+player_rows_sha256 = c779b33de99777d5b8f3cc67f035c4f9fb475c879c411b64aec1ce0f61073e8a
 ```
 
 ## Review summary — the shipped fixture

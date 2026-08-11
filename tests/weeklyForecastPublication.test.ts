@@ -19,6 +19,7 @@ import {
   WEEKLY_PRESEASON_INPUT_CLASSES,
   WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC,
   WEEKLY_FORECAST_STATUSES,
+  WEEKLY_STATUS_REASON_DIMENSION_BY_STATUS,
   WEEKLY_PROHIBITED_PRESEASON_INPUT_CLASSES,
   WEEKLY_PUBLICATION_ARTIFACT_VERSION,
   WEEKLY_PUBLICATION_SCHEMA_EXAMPLE_VERSION,
@@ -157,8 +158,11 @@ function censusContext(
       validator_version: forManifest.scoring_profile.source_reconciliation!.validator_version,
       evidence_ref: forManifest.scoring_profile.source_reconciliation!.evidence_ref,
       scoring_profile_sha256: forManifest.scoring_profile.profile_sha256,
-      // Read from the verified artifact, not copied from the manifest.
-      source_input_sha256s: [...new Set(forManifest.artifact_inputs.map((i) => i.content_sha256))],
+      // Read from the verified artifact, not copied from the manifest, and
+      // carried per input id so two inputs sharing a digest stay distinct.
+      source_input_digests_by_input_id: Object.fromEntries(
+        forManifest.artifact_inputs.map((i) => [i.input_id, i.content_sha256]),
+      ),
     },
     expected_census_identity: {
       owner_repository: WEEKLY_GOVERNED_CENSUS_OWNER,
@@ -874,7 +878,11 @@ describe('adversarial: 16 — a canonical id must belong to the record it cites'
     suppressed[0].forecast_status = 'identity_unresolved';
     suppressed[0].point_forecast = null;
     suppressed[0].rank = null;
-    suppressed[0].status_reasons = ['canonical_identity_missing_in_governed_crosswalk'];
+    suppressed[0].status_reasons = [{
+      dimension: 'identity' as const,
+      code: 'canonical_identity_missing_in_governed_crosswalk',
+      input_id: null,
+    }];
     // Identity itself is untouched and still correct.
     suppressed[1].rank = 1;
     const context = censusContext(realRows, real);
@@ -893,7 +901,11 @@ describe('adversarial: 16 — a canonical id must belong to the record it cites'
     suppressed[0].forecast_status = 'identity_unresolved';
     suppressed[0].point_forecast = null;
     suppressed[0].rank = null;
-    suppressed[0].status_reasons = ['canonical_identity_missing_in_governed_crosswalk'];
+    suppressed[0].status_reasons = [{
+      dimension: 'identity' as const,
+      code: 'canonical_identity_missing_in_governed_crosswalk',
+      input_id: null,
+    }];
     // Census evidence still carries the TRUE resolved mapping.
     const context = censusContext(realRows, real);
     expect(codes(validateWeeklyPublication(real, suppressed as any, context)))
@@ -1360,7 +1372,16 @@ function suppressRowAs(
   victim.forecast_status = status;
   victim.rank = null;
   victim.point_forecast = null;
-  victim.status_reasons = [reason];
+  // Typed reason matching the status's governed dimension, so a test attacking
+  // one thing is not also refused for an unrelated malformed reason.
+  const dimension = WEEKLY_STATUS_REASON_DIMENSION_BY_STATUS[
+    status as keyof typeof WEEKLY_STATUS_REASON_DIMENSION_BY_STATUS
+  ];
+  victim.status_reasons = [{
+    dimension,
+    code: reason,
+    input_id: dimension === 'required_input' ? 'tiber-data-prior-season-outcomes-2025' : null,
+  }];
   let rank = 1;
   for (const row of nextRows) {
     if (row.forecast_status === 'forecast_available') row.rank = rank++;
@@ -1956,12 +1977,14 @@ describe('adversarial: 23 — verified reconciliation must cover the admitted in
     // test is the same either way.
     const { manifest: real, rows: realRows } = realisedManifest();
     const context = censusContext(realRows, real);
-    const covered = context.verified_scoring_reconciliation!.source_input_sha256s;
+    const covered = { ...context.verified_scoring_reconciliation!.source_input_digests_by_input_id };
+    const firstId = Object.keys(covered)[0];
+    covered[firstId] = 'b'.repeat(63) + 'f';
     const result = validateWeeklyPublication(real, realRows, {
       ...context,
       verified_scoring_reconciliation: {
         ...context.verified_scoring_reconciliation!,
-        source_input_sha256s: [...covered.slice(1), 'b'.repeat(63) + 'f'],
+        source_input_digests_by_input_id: covered,
       },
     });
     expect(result.valid).toBe(false);
@@ -1975,7 +1998,7 @@ describe('adversarial: 23 — verified reconciliation must cover the admitted in
       ...context,
       verified_scoring_reconciliation: {
         ...context.verified_scoring_reconciliation!,
-        source_input_sha256s: [],
+        source_input_digests_by_input_id: {},
       },
     }))).toContain('scoring_reconciliation_invalid');
   });
@@ -2773,7 +2796,10 @@ describe('the admission seam is reachable through the package entry point', () =
     expect(typeof entry.isWeeklyPublicationDocument).toBe('function');
     expect(entry.WEEKLY_PUBLICATION_ARTIFACT_VERSION)
       .toBe(WEEKLY_PUBLICATION_ARTIFACT_VERSION);
-  });
+    // Generous timeout: this is the only test that transforms the whole public
+    // entry point, and a cold import can exceed the 5s default on a loaded
+    // machine. It flaked once in a full-suite run and passed in isolation.
+  }, 30_000);
 
   it('exposes only the entry point in the package exports map', () => {
     // Pins the premise of the test above: if a subpath export is ever added,
@@ -2943,7 +2969,13 @@ describe('adversarial: 40 — governed primary-status precedence', () => {
   ) => {
     const { manifest: real, rows: realRows } = realisedManifest();
     const rowId = realRows[0].population_row_id;
-    const attack = suppressRowAs(real, realRows, 0, status, `${status}_reason`);
+    // `suppressRowAs` clears the forecast and attaches a reason, which is only
+    // meaningful for an unavailable status. For the available case the row must
+    // stay exactly as published, or the test would be measuring a malformed row
+    // rather than the precedence rule.
+    const attack = status === 'forecast_available'
+      ? { manifest: real, rows: realRows as WeeklyPlayerRow[] }
+      : suppressRowAs(real, realRows, 0, status, `${status}_reason`);
     const identityState = census.identity ?? 'resolved';
     const canonical = identityState === 'resolved'
       ? (realRows[0].identity?.canonical_player_id ?? null)
@@ -3156,5 +3188,167 @@ describe('adversarial: 41 — precedence reaches the missing-required-input leve
     const result = validateWeeklyPublication(real, realRows, context);
     expect(result.valid).toBe(false);
     expect(codes(result)).toContain('forecast_status_precedence_violated');
+  });
+});
+
+describe('adversarial: 42 — reconciliation coverage binds ids, not a hash set', () => {
+  /**
+   * Two admitted inputs may legitimately carry the same content digest. A
+   * deduplicated hash set collapses them, so a reconciliation that covered one
+   * logical source passed as covering both, and the set could never show that a
+   * digest was covered under the id it was consumed under.
+   *
+   * The model-execution binding was corrected for exactly this at `ea42fef`;
+   * the reconciliation binding kept the set.
+   */
+  const sharedDigestFixture = () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const manifest = clone(real) as any;
+    // Give the second input the first one's digest — permitted, and the case
+    // the set cannot express.
+    const shared = manifest.artifact_inputs[0].content_sha256;
+    manifest.artifact_inputs[1].content_sha256 = shared;
+    manifest.scoring_profile.source_reconciliation.source_input_sha256s =
+      [...new Set(manifest.artifact_inputs.map((i: any) => i.content_sha256))]
+        .sort() as string[];
+    return { manifest: manifest as WeeklyForecastPublicationManifest, rows: realRows };
+  };
+
+  it('refuses a reconciliation that omits one of two same-digest inputs', () => {
+    const { manifest, rows } = sharedDigestFixture();
+    const base = censusContext(rows, manifest);
+    const covered = {
+      ...base.verified_scoring_reconciliation!.source_input_digests_by_input_id,
+    };
+    // Drop the second input entirely: under the old set comparison its digest
+    // was still present via the first, so the omission was invisible.
+    delete covered[manifest.artifact_inputs[1].input_id];
+    const result = validateWeeklyPublication(manifest, rows, {
+      ...base,
+      verified_scoring_reconciliation: {
+        ...base.verified_scoring_reconciliation!,
+        source_input_digests_by_input_id: covered,
+      },
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('scoring_reconciliation_invalid');
+  });
+
+  it('refuses coverage attributed to the wrong input id', () => {
+    // Same digests, same count — only the id→digest assignment is wrong.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const base = censusContext(realRows, real);
+    const covered = {
+      ...base.verified_scoring_reconciliation!.source_input_digests_by_input_id,
+    };
+    const [a, b] = Object.keys(covered);
+    [covered[a], covered[b]] = [covered[b], covered[a]];
+    const result = validateWeeklyPublication(real, realRows, {
+      ...base,
+      verified_scoring_reconciliation: {
+        ...base.verified_scoring_reconciliation!,
+        source_input_digests_by_input_id: covered,
+      },
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('scoring_reconciliation_invalid');
+  });
+
+  it('admits a same-digest publication whose coverage names every input', () => {
+    const { manifest, rows } = sharedDigestFixture();
+    const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+    expect(codes(result)).not.toContain('scoring_reconciliation_invalid');
+  });
+});
+
+describe('adversarial: 43 — a typed reason must be about the row it explains', () => {
+  /**
+   * A reason used to be any non-empty string. A fully verified run could
+   * therefore publish `unavailable_missing_required_inputs` alongside an
+   * unrelated or invented reason, and a consumer had no way to learn which
+   * required input actually failed.
+   *
+   * `code` stays producer-native — nothing in this contract can verify a
+   * finer-grained code, and a closed list invented here would be shape
+   * masquerading as evidence. Everything around it is bound.
+   */
+  const withReason = (reason: unknown) => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const index = realRows.findIndex((r) => r.forecast_status !== 'forecast_available');
+    const rows = clone(realRows as WeeklyPlayerRow[]) as any[];
+    rows[index].status_reasons = [reason];
+    const manifest = clone(real) as any;
+    manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(rows);
+    manifest.outputs[0].content_sha256 = manifest.digests.player_rows_sha256;
+    return validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+  };
+
+  const targetStatus = () =>
+    realisedManifest().rows.find((r) => r.forecast_status !== 'forecast_available')!.forecast_status;
+
+  it('refuses a reason from the wrong dimension', () => {
+    // The row is `no_prior_season_history`, whose dimension is required_input.
+    expect(targetStatus()).toBe('no_prior_season_history');
+    const result = withReason({
+      dimension: 'identity', code: 'looks_plausible_enough', input_id: null,
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('unavailable_row_reason_unbound');
+  });
+
+  it('refuses a required-input reason that names no input', () => {
+    const result = withReason({
+      dimension: 'required_input', code: 'something_was_missing', input_id: null,
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('unavailable_row_reason_unbound');
+  });
+
+  it('refuses a reason naming an input that is not required', () => {
+    const result = withReason({
+      dimension: 'required_input', code: 'missing', input_id: 'not-a-declared-input',
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('unavailable_row_reason_unbound');
+  });
+
+  it('refuses a reason naming a required input that DOES hold the row', () => {
+    // The sharpest case: well-formed, right dimension, real required input —
+    // and the verified membership says that input is not the problem.
+    const result = withReason({
+      dimension: 'required_input', code: 'missing', input_id: 'tiber-data-roster-state-2026-w1',
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('unavailable_row_reason_unbound');
+  });
+
+  it('refuses a non-input dimension that names an input anyway', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const index = realRows.findIndex((r) => r.forecast_status === 'identity_unresolved');
+    expect(index).toBeGreaterThanOrEqual(0);
+    const rows = clone(realRows as WeeklyPlayerRow[]) as any[];
+    rows[index].status_reasons = [{
+      dimension: 'identity', code: 'unresolved', input_id: 'tiber-data-roster-state-2026-w1',
+    }];
+    const manifest = clone(real) as any;
+    manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(rows);
+    manifest.outputs[0].content_sha256 = manifest.digests.player_rows_sha256;
+    const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('unavailable_row_reason_unbound');
+  });
+
+  it('refuses an empty code', () => {
+    const result = withReason({
+      dimension: 'required_input', code: '', input_id: 'tiber-data-prior-season-outcomes-2025',
+    });
+    expect(result.valid).toBe(false);
+  });
+
+  it('admits the committed fixture, whose reasons are bound', () => {
+    const { manifest, rows } = realisedManifest();
+    const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
   });
 });

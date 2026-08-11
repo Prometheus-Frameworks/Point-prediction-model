@@ -180,7 +180,13 @@ const EXAMPLE_ROWS: readonly WeeklyPlayerRow[] = [
     },
     input_ids_used: [],
     actual_outcome: null,
-    status_reasons: ['no_prior_season_realized_outcomes_for_population_row'],
+    status_reasons: [
+      {
+        dimension: 'required_input' as const,
+        code: 'no_prior_season_realized_outcomes_for_population_row',
+        input_id: 'tiber-data-prior-season-outcomes-2025',
+      },
+    ],
   },
   {
     // Identity that does not cleanly resolve stays visible and unranked.
@@ -215,7 +221,13 @@ const EXAMPLE_ROWS: readonly WeeklyPlayerRow[] = [
     },
     input_ids_used: [],
     actual_outcome: null,
-    status_reasons: ['canonical_identity_missing_in_governed_crosswalk'],
+    status_reasons: [
+      {
+        dimension: 'identity' as const,
+        code: 'canonical_identity_missing_in_governed_crosswalk',
+        input_id: null,
+      },
+    ],
   },
 ];
 

@@ -413,6 +413,55 @@ export const WEEKLY_FORECAST_STATUSES = [
   'roster_state_unresolved',
 ] as const;
 export type WeeklyForecastStatus = (typeof WEEKLY_FORECAST_STATUSES)[number];
+
+/**
+ * The governed reason dimensions (§4 `status_reasons[].dimension`).
+ */
+export const WEEKLY_STATUS_REASON_DIMENSIONS = [
+  'identity',
+  'population_eligibility',
+  'position_domain',
+  'required_input',
+] as const;
+export type WeeklyStatusReasonDimension = (typeof WEEKLY_STATUS_REASON_DIMENSIONS)[number];
+
+/**
+ * Which dimension each unavailability status belongs to.
+ *
+ * A reason used to be a bare string, checked only for being non-empty, so a
+ * fully verified run could publish `unavailable_missing_required_inputs`
+ * alongside an unrelated or invented reason and a consumer could not tell which
+ * required input had failed.
+ */
+export const WEEKLY_STATUS_REASON_DIMENSION_BY_STATUS: Readonly<
+  Record<Exclude<WeeklyForecastStatus, 'forecast_available'>, WeeklyStatusReasonDimension>
+> = Object.freeze({
+  identity_unresolved: 'identity',
+  identity_conflicting: 'identity',
+  population_ineligible: 'population_eligibility',
+  eligibility_unresolved: 'population_eligibility',
+  unsupported_position_domain: 'position_domain',
+  position_domain_unresolved: 'position_domain',
+  unavailable_missing_required_inputs: 'required_input',
+  no_prior_season_history: 'required_input',
+  roster_state_unresolved: 'required_input',
+});
+
+export interface WeeklyStatusReason {
+  dimension: WeeklyStatusReasonDimension;
+  /**
+   * Producer-native detail code.
+   *
+   * Deliberately NOT constrained to a closed set: nothing in this contract can
+   * verify a finer-grained code, and a field that admission cannot check is the
+   * defect this whole contract exists to avoid. What IS checked is everything
+   * verifiable around it — the dimension must match the row's governed status,
+   * and `input_id` must name a required input the row is genuinely missing from.
+   */
+  code: string;
+  /** Required for `required_input`, and null for every other dimension. */
+  input_id: string | null;
+}
 export type WeeklyStatusCounts = Record<WeeklyForecastStatus, number>;
 
 export interface WeeklyUnavailableUncertainty {
@@ -462,7 +511,7 @@ export interface WeeklyUnavailablePlayerRow {
   uncertainty: WeeklyUnavailableUncertainty;
   input_ids_used: readonly string[];
   actual_outcome: null;
-  status_reasons: readonly string[];
+  status_reasons: readonly WeeklyStatusReason[];
 }
 
 export type WeeklyPlayerRow =
@@ -685,6 +734,7 @@ export type WeeklyValidationErrorCode =
   | 'identity_evidence_unbound'
   | 'eligibility_evidence_unbound'
   | 'forecast_status_precedence_violated'
+  | 'unavailable_row_reason_unbound'
   | 'census_membership_mismatch'
   | 'identity_fuzzy_join_used'
   | 'identity_synthetic_namespace_used'
@@ -1148,7 +1198,13 @@ export function parseWeeklyPlayerRows(
       if (row.rank !== null) expectNumber(row.rank, `${path}.rank`, rowErrors);
       if (row.actual_outcome !== null) malformed(rowErrors, `${path}.actual_outcome`, 'Expected null before the target week.');
       if (row.forecast_status !== 'forecast_available') {
-        expectArray(row.status_reasons, `${path}.status_reasons`, rowErrors, expectStringItem);
+        expectArray(row.status_reasons, `${path}.status_reasons`, rowErrors, (item, itemPath, itemErrors) => {
+          const reason = expectRecord(item, itemPath, itemErrors);
+          if (!reason) return;
+          expectString(reason.dimension, `${itemPath}.dimension`, itemErrors);
+          expectString(reason.code, `${itemPath}.code`, itemErrors);
+          if (reason.input_id !== null) expectString(reason.input_id, `${itemPath}.input_id`, itemErrors);
+        });
       }
     });
     canonicalForwardJsonSha256(input);
@@ -1320,8 +1376,14 @@ export interface WeeklyVerificationContext {
      * This remains load-bearing now that every admitted input class is
      * consumer-pinned: the pins establish WHICH artifact was used, and this
      * establishes that the reconciliation actually covers it.
+     *
+     * Carried as an input_id→digest MAP for the same reason
+     * `input_digests_by_input_id` is: a deduplicated hash set collapses two
+     * admitted inputs that share a digest, so a reconciliation covering one
+     * logical source passes as covering both, and the set can never show that a
+     * digest was covered under the id it was consumed under.
      */
-    source_input_sha256s: readonly string[];
+    source_input_digests_by_input_id: Readonly<Record<string, string>>;
   };
   expected_census_identity?: {
     /**
@@ -1642,6 +1704,14 @@ export function validateWeeklyPublication(
       'Scoring profile must exactly match the canonical generic full-PPR definition and digest.');
   }
 
+  // Admitted inputs as an id→digest MAP. Both the reconciliation and the model
+  // execution bind against this rather than a deduplicated hash set: the set
+  // collapses two inputs that legitimately share a digest, and can never show
+  // that a digest was covered under the RIGHT id.
+  const admittedInputDigestsByInputId = Object.fromEntries(
+    (manifest.artifact_inputs ?? []).map((i) => [i.input_id, i.content_sha256]),
+  );
+
   const inputHashes = (manifest.artifact_inputs ?? [])
     .map((input) => input.content_sha256)
     .sort(compareForwardCanonicalStrings);
@@ -1693,16 +1763,21 @@ export function validateWeeklyPublication(
         'manifest cites, and reconcile to the canonical scoring profile.');
     } else if (
       // The coverage comparison above runs on manifest-owned copies on both
-      // sides. Comparing the hashes the VERIFIED artifact actually covers with
-      // the admitted inputs is what stops a genuine `passed` reconciliation for
-      // one input set being cited for another.
-      canonicalForwardJsonSha256(
-        [...new Set(verifiedReconciliation.source_input_sha256s ?? [])]
-          .sort(compareForwardCanonicalStrings),
-      ) !== canonicalForwardJsonSha256(canonicalInputHashes)
+      // sides. Comparing what the VERIFIED artifact actually covers with the
+      // admitted inputs is what stops a genuine `passed` reconciliation for one
+      // input set being cited for another.
+      //
+      // Compared as an id→digest MAP, for the same reason the execution binding
+      // is: a deduplicated hash set collapses two admitted inputs that share a
+      // digest, so a reconciliation covering one logical source passed as
+      // covering both, and it could never show that a digest was covered under
+      // the right id.
+      canonicalForwardJsonSha256(verifiedReconciliation.source_input_digests_by_input_id ?? {}) !==
+        canonicalForwardJsonSha256(admittedInputDigestsByInputId)
     ) {
       fail('scoring_reconciliation_invalid', 'verification_context.verified_scoring_reconciliation',
-        'The verified reconciliation covers a different input set than the publication admits.');
+        'The verified reconciliation does not cover exactly the admitted inputs, each under the ' +
+        'input id the publication declares.');
     }
   }
 
@@ -1733,9 +1808,6 @@ export function validateWeeklyPublication(
   // the exact inputs, and the exact output rows.
   if (!isExample) {
     const run = context.verified_model_execution;
-    const admittedInputDigestsByInputId = Object.fromEntries(
-      (manifest.artifact_inputs ?? []).map((i) => [i.input_id, i.content_sha256]),
-    );
     if (!run) {
       fail('model_execution_unverified', 'verification_context.verified_model_execution',
         'Admission requires an independently verified model execution; declared model identity ' +
@@ -2433,6 +2505,54 @@ export function validateWeeklyPublication(
       if (!Array.isArray(row.status_reasons) || row.status_reasons.length === 0) {
         fail('unavailable_row_missing_reason', `${at}.status_reasons`,
           'An unavailable row requires at least one typed reason.');
+      } else {
+        // A reason used to be any non-empty string. A fully verified run could
+        // therefore publish `unavailable_missing_required_inputs` next to an
+        // unrelated or invented reason, and a consumer had no way to learn which
+        // required input actually failed.
+        //
+        // What can be verified is bound: the dimension must be the one the row's
+        // governed status belongs to, and a `required_input` reason must name a
+        // declared required input the verified membership shows the row is
+        // genuinely missing from. `code` stays producer-native — nothing here
+        // can check a finer-grained code, and inventing a closed list would be
+        // shape masquerading as evidence.
+        const expectedDimension =
+          WEEKLY_STATUS_REASON_DIMENSION_BY_STATUS[
+            row.forecast_status as Exclude<WeeklyForecastStatus, 'forecast_available'>
+          ];
+        row.status_reasons.forEach((reason, index) => {
+          const atReason = `${at}.status_reasons[${index}]`;
+          if (!reason?.code) {
+            fail('unavailable_row_missing_reason', `${atReason}.code`,
+              'A typed reason requires a non-empty code.');
+          }
+          if (expectedDimension !== undefined && reason?.dimension !== expectedDimension) {
+            fail('unavailable_row_reason_unbound', `${atReason}.dimension`,
+              `Row "${row.population_row_id}" is ${row.forecast_status}, whose reason dimension ` +
+              `is '${expectedDimension}', but this reason declares ` +
+              `${JSON.stringify(reason?.dimension ?? null)}.`);
+          }
+          if (reason?.dimension === 'required_input') {
+            if (!reason.input_id) {
+              fail('unavailable_row_reason_unbound', `${atReason}.input_id`,
+                'A required-input reason must name the input that failed.');
+            } else if (!requiredInputIds.has(reason.input_id)) {
+              fail('unavailable_row_reason_unbound', `${atReason}.input_id`,
+                `Reason names "${reason.input_id}", which is not a declared required input.`);
+            } else {
+              const members = verifiedMembersByInputId.get(reason.input_id);
+              if (members?.has(row.population_row_id)) {
+                fail('unavailable_row_reason_unbound', `${atReason}.input_id`,
+                  `Reason names required input "${reason.input_id}", but its verified membership ` +
+                  `holds an eligible record for "${row.population_row_id}".`);
+              }
+            }
+          } else if (reason?.input_id != null) {
+            fail('unavailable_row_reason_unbound', `${atReason}.input_id`,
+              `A ${reason.dimension} reason cannot name an input id.`);
+          }
+        });
       }
       // An unavailability REASON must be consistent with the verified identity
       // state, not merely well-formed. Binding canonical_player_id closed the
