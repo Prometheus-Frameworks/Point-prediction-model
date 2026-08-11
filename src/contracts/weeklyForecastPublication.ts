@@ -735,6 +735,7 @@ export type WeeklyValidationErrorCode =
   | 'eligibility_evidence_unbound'
   | 'forecast_status_precedence_violated'
   | 'unavailable_row_reason_unbound'
+  | 'available_row_carries_status_reasons'
   | 'census_membership_mismatch'
   | 'identity_fuzzy_join_used'
   | 'identity_synthetic_namespace_used'
@@ -1197,7 +1198,16 @@ export function parseWeeklyPlayerRows(
       if (row.point_forecast !== null) expectNumber(row.point_forecast, `${path}.point_forecast`, rowErrors);
       if (row.rank !== null) expectNumber(row.rank, `${path}.rank`, rowErrors);
       if (row.actual_outcome !== null) malformed(rowErrors, `${path}.actual_outcome`, 'Expected null before the target week.');
-      if (row.forecast_status !== 'forecast_available') {
+      if (row.forecast_status === 'forecast_available') {
+        // The type says `status_reasons?: never`, but the parser skipped the
+        // field entirely for available rows, so malformed or contradictory
+        // reason data rode through untouched — and a consumer reading the JSON
+        // directly sees an available forecast carrying failure reasons.
+        if (row.status_reasons !== undefined) {
+          malformed(rowErrors, `${path}.status_reasons`,
+            'An available row may not carry status reasons.');
+        }
+      } else {
         expectArray(row.status_reasons, `${path}.status_reasons`, rowErrors, (item, itemPath, itemErrors) => {
           const reason = expectRecord(item, itemPath, itemErrors);
           if (!reason) return;
@@ -2449,6 +2459,12 @@ export function validateWeeklyPublication(
     if (row.forecast_status === 'forecast_available') {
       const available = row as WeeklyAvailablePlayerRow;
       availableRows.push(available);
+      // Belt and braces with the parser guard above: a caller reaching the
+      // semantic validator directly must get the same answer.
+      if ((row as { status_reasons?: unknown }).status_reasons !== undefined) {
+        fail('available_row_carries_status_reasons', `${at}.status_reasons`,
+          'An available row may not carry status reasons.');
+      }
       // An available forecast asserts the player belongs in the rankings. The
       // census does not establish that -- it deliberately enumerates ineligible
       // records too -- so without this the publisher chose the target
@@ -2553,6 +2569,34 @@ export function validateWeeklyPublication(
               `A ${reason.dimension} reason cannot name an input id.`);
           }
         });
+
+        // Completeness, not just correctness. The checks above stop a reason
+        // from blaming the wrong input; they say nothing about the inputs the
+        // publisher chose to stay silent about. The governed rule is that
+        // "every missing required feature has its own typed source-linked
+        // reason" (§4), so naming one of two genuinely missing inputs leaves a
+        // consumer believing the other is fine.
+        //
+        // Decidable only when every required input carries verified membership,
+        // for the same reason the precedence level is: an unverified input
+        // cannot be shown to be missing, so silence about it is not a gap.
+        if (expectedDimension === 'required_input') {
+          const requiredIds = [...requiredInputIds];
+          if (requiredIds.length > 0 && requiredIds.every((id) => verifiedMembersByInputId.has(id))) {
+            const named = new Set(
+              row.status_reasons.map((reason) => reason?.input_id).filter(Boolean),
+            );
+            const unexplained = requiredIds.filter((id) =>
+              !verifiedMembersByInputId.get(id)!.has(row.population_row_id) && !named.has(id));
+            if (unexplained.length > 0) {
+              fail('unavailable_row_missing_reason', `${at}.status_reasons`,
+                `Row "${row.population_row_id}" has no reason naming required ` +
+                `input${unexplained.length === 1 ? '' : 's'} ` +
+                `${unexplained.map((id) => `"${id}"`).join(', ')}, which the verified membership ` +
+                'shows it is missing from.');
+            }
+          }
+        }
       }
       // An unavailability REASON must be consistent with the verified identity
       // state, not merely well-formed. Binding canonical_player_id closed the

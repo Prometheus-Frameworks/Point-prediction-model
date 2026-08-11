@@ -180,11 +180,18 @@ const EXAMPLE_ROWS: readonly WeeklyPlayerRow[] = [
     },
     input_ids_used: [],
     actual_outcome: null,
+    // One reason per missing required input. Naming only the outcomes input
+    // left a consumer believing usage-and-role was fine.
     status_reasons: [
       {
         dimension: 'required_input' as const,
         code: 'no_prior_season_realized_outcomes_for_population_row',
         input_id: 'tiber-data-prior-season-outcomes-2025',
+      },
+      {
+        dimension: 'required_input' as const,
+        code: 'no_prior_season_usage_or_role_for_population_row',
+        input_id: 'tiber-data-prior-season-usage-2025',
       },
     ],
   },

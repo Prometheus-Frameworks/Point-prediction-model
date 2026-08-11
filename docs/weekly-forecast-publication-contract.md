@@ -256,6 +256,21 @@ as evidence — the defect this contract exists to avoid. What is checked is
 everything around it, which is what a consumer actually needs: the reason is
 about the right dimension, and it names an input that genuinely failed.
 
+**Reasons must be complete, not merely correct.** The rules above stop a reason
+from blaming the wrong input; they say nothing about the inputs a publisher
+stays silent about. The governed rule is that *every* missing required feature
+has its own typed source-linked reason (§4), so a row missing two required
+inputs while naming one is refused — a consumer would otherwise read the
+unnamed input as fine. As with the precedence level, this is decided only when
+every required input carries verified membership: an unverified input cannot be
+shown to be missing, so silence about it is not a gap.
+
+An **available** row may carry no `status_reasons` at all. The type has always
+said `status_reasons?: never`, but the parser skipped the field for available
+rows and the validator never looked, so malformed or contradictory reason data
+rode through and a consumer reading the JSON saw an available forecast with
+failure reasons attached. Both layers now refuse it.
+
 ### An unavailability reason loses to the evidence
 
 A typed reason is not merely a well-formed record: it is a **claim about the
@@ -564,8 +579,8 @@ timestamp is a declared constant. Repeated runs produce byte-identical output.
 Current fixture digests:
 
 ```
-manifest_sha256    = 9c4a64fd56797b2938443d93f3ac32c0fe3cf48f603de05fec6bfb1104a5424a
-player_rows_sha256 = c779b33de99777d5b8f3cc67f035c4f9fb475c879c411b64aec1ce0f61073e8a
+manifest_sha256    = 45997cd6af433ac1e0a2248798cc29cffe2ad20535b8abd4673d30a14f8c2fbe
+player_rows_sha256 = e45546930baaaf7da3d7f03e9800a4baf7a8bca873b30019da869090dd2f7185
 ```
 
 ## Review summary — the shipped fixture

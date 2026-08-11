@@ -3352,3 +3352,121 @@ describe('adversarial: 43 — a typed reason must be about the row it explains',
     expect(result.valid).toBe(true);
   });
 });
+
+describe('adversarial: 44 — reason coverage and reasons on available rows', () => {
+  /**
+   * Correctness is not completeness. Block 43 stops a reason from blaming the
+   * wrong input; it says nothing about the inputs a publisher stays silent
+   * about. The governed rule is that "every missing required feature has its own
+   * typed source-linked reason" (§4), and the committed fixture demonstrated the
+   * gap: its rookie row is missing from BOTH prior-season inputs while naming
+   * only the outcomes one, so a consumer would read usage-and-role as fine.
+   * That row now carries a reason per missing input.
+   */
+  const rookieRow = () =>
+    realisedManifest().rows.find((r) => r.forecast_status === 'no_prior_season_history')!;
+
+  const withReasons = (reasons: readonly unknown[]) => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const index = realRows.findIndex((r) => r.forecast_status === 'no_prior_season_history');
+    const rows = clone(realRows as WeeklyPlayerRow[]) as any[];
+    rows[index].status_reasons = reasons;
+    const manifest = clone(real) as any;
+    manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(rows);
+    manifest.outputs[0].content_sha256 = manifest.digests.player_rows_sha256;
+    return validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+  };
+
+  it('the fixture row is genuinely missing from both prior-season inputs', () => {
+    // Pins the premise. If the fixture ever stops exercising the multi-missing
+    // case, the coverage test below silently stops testing anything.
+    const { manifest, rows } = realisedManifest();
+    const context = censusContext(rows, manifest);
+    const missing = context.record_level_input_evidence!.filter((e) => {
+      const input = manifest.artifact_inputs.find((i) => i.input_id === e.input_id)!;
+      return (WEEKLY_REQUIRED_INPUT_CLASSES as readonly string[]).includes(input.input_class) &&
+        !e.eligible_population_row_ids.includes(rookieRow().population_row_id);
+    });
+    expect(missing.map((e) => e.input_id).sort()).toEqual([
+      'tiber-data-prior-season-outcomes-2025',
+      'tiber-data-prior-season-usage-2025',
+    ]);
+  });
+
+  it('refuses a row that explains only one of two missing required inputs', () => {
+    const result = withReasons([{
+      dimension: 'required_input',
+      code: 'no_prior_season_realized_outcomes_for_population_row',
+      input_id: 'tiber-data-prior-season-outcomes-2025',
+    }]);
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('unavailable_row_missing_reason');
+  });
+
+  it('admits a row that explains every missing required input', () => {
+    const result = withReasons([
+      {
+        dimension: 'required_input',
+        code: 'no_prior_season_realized_outcomes_for_population_row',
+        input_id: 'tiber-data-prior-season-outcomes-2025',
+      },
+      {
+        dimension: 'required_input',
+        code: 'no_prior_season_usage_or_role_for_population_row',
+        input_id: 'tiber-data-prior-season-usage-2025',
+      },
+    ]);
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it('stays silent when a required input carries no verified membership', () => {
+    // An unverified input cannot be shown missing, so silence about it is not a
+    // gap. Same guard as the precedence level.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const index = realRows.findIndex((r) => r.forecast_status === 'no_prior_season_history');
+    const rows = clone(realRows as WeeklyPlayerRow[]) as any[];
+    rows[index].status_reasons = [{
+      dimension: 'required_input',
+      code: 'no_prior_season_realized_outcomes_for_population_row',
+      input_id: 'tiber-data-prior-season-outcomes-2025',
+    }];
+    const manifest = clone(real) as any;
+    manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(rows);
+    manifest.outputs[0].content_sha256 = manifest.digests.player_rows_sha256;
+    const context = censusContext(rows, manifest);
+    const usageId = 'tiber-data-prior-season-usage-2025';
+    const result = validateWeeklyPublication(manifest, rows, {
+      ...context,
+      record_level_input_evidence: context.record_level_input_evidence!.filter(
+        (e) => e.input_id !== usageId,
+      ),
+    });
+    expect(codes(result)).not.toContain('unavailable_row_missing_reason');
+  });
+
+  it('refuses an available row carrying status reasons', () => {
+    // The type says `status_reasons?: never`, but the parser skipped the field
+    // for available rows and the validator never looked, so a consumer reading
+    // the JSON saw an available forecast with failure reasons attached.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const index = realRows.findIndex((r) => r.forecast_status === 'forecast_available');
+    const rows = clone(realRows as WeeklyPlayerRow[]) as any[];
+    rows[index].status_reasons = [{
+      dimension: 'required_input', code: 'looks_official', input_id: null,
+    }];
+    const manifest = clone(real) as any;
+    manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(rows);
+    manifest.outputs[0].content_sha256 = manifest.digests.player_rows_sha256;
+    expect(validateWeeklyPublication(manifest, rows, censusContext(rows, manifest)).valid)
+      .toBe(false);
+  });
+
+  it('refuses malformed reason data on an available row at the parser', () => {
+    // The parser skipped the field entirely, so even garbage rode through.
+    const { manifest, rows } = realisedManifest();
+    const bad = clone(rows as WeeklyPlayerRow[]) as any[];
+    bad[bad.findIndex((r) => r.forecast_status === 'forecast_available')].status_reasons = 17;
+    expect(isWeeklyPublicationDocument(manifest) && parseWeeklyPlayerRows(bad).ok).toBe(false);
+  });
+});
