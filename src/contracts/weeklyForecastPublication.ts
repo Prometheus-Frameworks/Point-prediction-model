@@ -1218,6 +1218,15 @@ export interface WeeklyVerificationContext {
     source_uri_or_path: string;
     /** population_row_id → the canonical player id the governed census assigns. */
     canonical_player_ids_by_row_id?: Readonly<Record<string, string | null>>;
+    /**
+     * population_row_id → the cutoff-bound position the governed census assigns,
+     * or null where the census itself records it as unknown.
+     *
+     * Position decides both admissibility (`WEEKLY_SUPPORTED_POSITIONS`) and the
+     * `unsupported_position_domain` status, so leaving it publisher-declared let
+     * a resolved row be relabelled `K` and suppressed on assertion alone.
+     */
+    positions_by_row_id?: Readonly<Record<string, string | null>>;
   };
   /**
    * Verification results produced from the exact source bytes. An input id by
@@ -2046,14 +2055,25 @@ export function validateWeeklyPublication(
           'carries no evidence that could confirm or refute it. Such a status cannot be ' +
           'admission-capable: it would let any row be suppressed on assertion alone.');
       }
-      if (
-        row.forecast_status === 'unsupported_position_domain' &&
-        (WEEKLY_SUPPORTED_POSITIONS as readonly string[]).includes(row.identity?.position ?? '')
-      ) {
-        fail('unavailability_reason_contradicted', `${at}.forecast_status`,
-          `Row "${row.population_row_id}" claims unsupported_position_domain while declaring the ` +
-          `supported position "${row.identity?.position}". Note that position is publisher-declared: ` +
-          'this catches the self-contradiction, not a false position.');
+      if (row.forecast_status === 'unsupported_position_domain') {
+        // Judged against the VERIFIED census position, never the row's own.
+        // Comparing the status to the publisher's own declaration only caught
+        // self-contradiction: relabelling a resolved WR as `K` made the row
+        // internally consistent and suppressed it, and repeating that across
+        // the population empties the rankings on assertion alone — the same
+        // vector as the two statuses refused above. The position binding below
+        // forces the declaration to match the census; this decides the status
+        // from that governed value.
+        const governedPosition = context.census?.positions_by_row_id?.[row.population_row_id];
+        if (governedPosition === undefined || governedPosition === null) {
+          fail('unavailability_reason_unverifiable', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims unsupported_position_domain, but the verified ` +
+            'census records no position for it, so the claim can be neither confirmed nor refuted.');
+        } else if ((WEEKLY_SUPPORTED_POSITIONS as readonly string[]).includes(governedPosition)) {
+          fail('unavailability_reason_contradicted', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims unsupported_position_domain, but the verified ` +
+            `census assigns it the supported position "${governedPosition}".`);
+        }
       }
     }
 
@@ -2091,6 +2111,28 @@ export function validateWeeklyPublication(
       // digest, satisfies every per-field check above — and produces forecasts
       // attributed to the wrong player. Bind the id to the verified census
       // record's contents.
+      // Position is governed census data ("<cutoff-bound position | unknown>"),
+      // not a publisher assertion. Binding it closes the misdeclaration hole in
+      // both directions: an available row cannot claim a supported position the
+      // census disagrees with, and an unavailable row cannot invent an
+      // unsupported one to justify suppressing itself.
+      const censusPositions = context.census?.positions_by_row_id;
+      if (!censusPositions) {
+        fail('identity_evidence_unbound', `${at}.identity.position`,
+          'Verified census positions are required to bind row positions.');
+      } else {
+        const expectedPosition = censusPositions[row.population_row_id];
+        const declaredPosition = row.identity?.position ?? null;
+        if (expectedPosition === undefined) {
+          fail('identity_evidence_unbound', `${at}.identity.position`,
+            `The verified census carries no position record for "${row.population_row_id}".`);
+        } else if (declaredPosition !== expectedPosition) {
+          fail('identity_evidence_unbound', `${at}.identity.position`,
+            `Row "${row.population_row_id}" declares position ${JSON.stringify(declaredPosition)} ` +
+            `while the verified census assigns ${JSON.stringify(expectedPosition)}.`);
+        }
+      }
+
       const censusIdentities = context.census?.canonical_player_ids_by_row_id;
       if (!censusIdentities) {
         fail('identity_evidence_unbound', `${at}.identity.canonical_player_id`,

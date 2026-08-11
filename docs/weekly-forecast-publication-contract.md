@@ -255,7 +255,7 @@ So each reason is bound to whatever independently verifies it:
 | `identity_unresolved`, `identity_conflicting` | the verified census resolves the row to a canonical id, or the row itself declares `identity_status: 'resolved'` |
 | `unavailable_missing_required_inputs` | every required input carries verified membership **and** all of them hold an eligible record for the row |
 | `no_prior_season_history` | a verified `prior_season_realized_outcomes` or `prior_season_usage_and_role` input holds an eligible record for the row |
-| `unsupported_position_domain` | the row declares a supported offensive position |
+| `unsupported_position_domain` | the **verified census** assigns the row a supported offensive position |
 
 Two statuses are **categorically inadmissible**, for the same reason
 `calibrated` uncertainty is: this contract carries no evidence that could
@@ -268,6 +268,15 @@ receipt and trusted binding, and admit a publication containing no rankings.
 | --- | --- | --- |
 | `population_ineligible` | census membership implies nothing about eligibility — the census is deliberately broad and *includes* ineligible records — and nothing else in the document speaks to it | a governed eligibility decision carried in the verification context |
 | `roster_state_unresolved` | membership in the roster input establishes only that a *timely* record exists; the governed row shape explicitly admits `team_assignment_status: unknown \| unavailable`, so a record can be present while the state is genuinely unresolved | the verified `team_assignment_status` of that record |
+
+`unsupported_position_domain` is judged against the census, never the row's own
+declaration. Position is governed census data (`"<cutoff-bound position |
+unknown>"`), and the verification context carries it as `positions_by_row_id`;
+every row's declared position must equal the verified value. Without that
+binding a resolved WR could be relabelled `K`, making the row internally
+consistent and suppressing it — and repeating that across the population empties
+the rankings on assertion alone. Where the census records the position as
+unknown the status is refused as unverifiable rather than assumed true.
 
 Two limits are deliberate. **Absence of evidence stays silent**: where an input
 does not claim `locally_verified`, or claims it and supplies no membership, the

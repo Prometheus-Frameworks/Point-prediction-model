@@ -483,6 +483,9 @@ function exampleCensusContext(
       canonical_player_ids_by_row_id: Object.fromEntries(
         EXAMPLE_ROWS.map((row) => [row.population_row_id, row.identity?.canonical_player_id ?? null]),
       ),
+      positions_by_row_id: Object.fromEntries(
+        EXAMPLE_ROWS.map((row) => [row.population_row_id, row.identity?.position ?? null]),
+      ),
     },
   };
 }

@@ -140,6 +140,12 @@ function censusContext(
       canonical_player_ids_by_row_id: Object.fromEntries(
         rowSet.map((r) => [r.population_row_id, r.identity?.canonical_player_id ?? null]),
       ),
+      // Governed census positions. The fixture rows ARE the census here, so the
+      // verified position is the declared one; tests that attack the binding
+      // override this explicitly.
+      positions_by_row_id: Object.fromEntries(
+        rowSet.map((r) => [r.population_row_id, r.identity?.position ?? null]),
+      ),
     },
     record_level_input_evidence: recordLevelEvidence,
     admission_authority: receipt ? trustedBindingFor(receipt) : undefined,
@@ -1550,5 +1556,106 @@ describe('adversarial: 18 — records and members are different units', () => {
     );
     expect(codes(validateWeeklyPublication(manifest, realRows, { ...context, record_level_input_evidence: evidence })))
       .toContain('available_row_missing_required_input');
+  });
+});
+
+describe('adversarial: 19 — position is governed census data, not a publisher assertion', () => {
+  // The reported bypass: `unsupported_position_domain` was judged against the
+  // row's OWN declared position, so relabelling a resolved WR as `K` made the
+  // row internally consistent and suppressed it. Repeating that across the
+  // population empties the rankings on assertion alone.
+
+  it('refuses a row whose declared position diverges from the census', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const tampered = clone(realRows) as any[];
+    tampered[0].identity.position = 'K';
+    expect(codes(validateWeeklyPublication(real, tampered as any, censusContext(realRows, real))))
+      .toContain('identity_evidence_unbound');
+  });
+
+  it('refuses the relabel-then-suppress attack', () => {
+    // The full transformation: relabel to an unsupported position, flip the
+    // status to match, clear forecast and rank, renumber and recompute.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real); // census still says WR
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'unsupported_position_domain',
+      'position_outside_supported_offensive_domain',
+    );
+    (attack.rows[0] as any).identity.position = 'K';
+    attack.manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(attack.rows);
+    (attack.manifest.outputs[0] as any).content_sha256 = attack.manifest.digests.player_rows_sha256;
+
+    const result = validateWeeklyPublication(attack.manifest, attack.rows, context);
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('identity_evidence_unbound');
+  });
+
+  it('refuses the status when the census assigns a supported position', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'unsupported_position_domain',
+      'position_outside_supported_offensive_domain',
+    );
+    expect(codes(validateWeeklyPublication(
+      attack.manifest, attack.rows, censusContext(realRows, real),
+    ))).toContain('unavailability_reason_contradicted');
+  });
+
+  it('refuses the status as unverifiable when the census records no position', () => {
+    // The census's own shape permits "<cutoff-bound position | unknown>", so an
+    // unknown position makes the claim undecidable rather than true.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'unsupported_position_domain',
+      'position_outside_supported_offensive_domain',
+    );
+    (attack.rows[0] as any).identity.position = null;
+    attack.manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(attack.rows);
+    (attack.manifest.outputs[0] as any).content_sha256 = attack.manifest.digests.player_rows_sha256;
+
+    const context = censusContext(realRows, real);
+    const positions = { ...context.census!.positions_by_row_id!, [attack.rows[0].population_row_id]: null };
+    const result = validateWeeklyPublication(attack.manifest, attack.rows, {
+      ...context,
+      census: { ...context.census!, positions_by_row_id: positions },
+    });
+    expect(codes(result)).toContain('unavailability_reason_unverifiable');
+  });
+
+  it('still admits a genuinely unsupported position the census agrees with', () => {
+    // The guard must not make the status undeclarable: it is the only status
+    // available for an unsupported-position census row, so refusing it outright
+    // would deadlock any census containing one.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'unsupported_position_domain',
+      'position_outside_supported_offensive_domain',
+    );
+    (attack.rows[0] as any).identity.position = 'K';
+    attack.manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(attack.rows);
+    (attack.manifest.outputs[0] as any).content_sha256 = attack.manifest.digests.player_rows_sha256;
+
+    const context = censusContext(realRows, real);
+    const positions = { ...context.census!.positions_by_row_id!, [attack.rows[0].population_row_id]: 'K' };
+    const result = validateWeeklyPublication(attack.manifest, attack.rows, {
+      ...context,
+      census: { ...context.census!, positions_by_row_id: positions },
+    });
+    expect(codes(result)).not.toContain('unavailability_reason_contradicted');
+    expect(codes(result)).not.toContain('unavailability_reason_unverifiable');
+    expect(codes(result)).not.toContain('identity_evidence_unbound');
+  });
+
+  it('refuses admission without verified census positions', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    delete (context.census as any).positions_by_row_id;
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .toContain('identity_evidence_unbound');
   });
 });
