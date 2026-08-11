@@ -394,6 +394,21 @@ export const WEEKLY_FORECAST_STATUSES = [
   'identity_unresolved',
   'identity_conflicting',
   'population_ineligible',
+  // The governed census can record eligibility or position as UNRESOLVED, and
+  // those are not the same claims as `population_ineligible` or
+  // `unsupported_position_domain`. Without their own statuses such a row had no
+  // truthful label at all: availability requires `eligible` and a supported
+  // position, while the ineligible/unsupported statuses require exactly
+  // `ineligible` and a governed unsupported position, and every evidence-based
+  // alternative is contradicted. Since the contract also requires one output row
+  // per census row, a SINGLE unresolved row made the whole publication
+  // un-admittable — verified by probing all eight prior statuses against such a
+  // row and finding every one refused.
+  //
+  // Both are in the governed artifact vocabulary (§4 `status.forecast`), so this
+  // adopts it rather than inventing one.
+  'eligibility_unresolved',
+  'position_domain_unresolved',
   'no_prior_season_history',
   'roster_state_unresolved',
 ] as const;
@@ -2461,6 +2476,39 @@ export function validateWeeklyPublication(
           fail('unavailability_reason_contradicted', `${at}.forecast_status`,
             `Row "${row.population_row_id}" claims population_ineligible while the verified ` +
             `census records eligibility '${governedEligibility}'.`);
+        }
+      }
+
+      // The two unresolved statuses, bound the same way. Each is truthful for
+      // exactly one governed value, so neither is a suppression channel: a row
+      // the census resolves cannot borrow them, and a row the census leaves
+      // unresolved cannot be ranked (availability requires `eligible` and a
+      // supported position).
+      if (row.forecast_status === 'eligibility_unresolved') {
+        if (governedEligibility === undefined) {
+          fail('unavailability_reason_unverifiable', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims eligibility_unresolved, but no verified ` +
+            'census eligibility decision was supplied that could confirm or refute it.');
+        } else if (governedEligibility !== 'unresolved') {
+          fail('unavailability_reason_contradicted', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims eligibility_unresolved while the verified ` +
+            `census records eligibility '${governedEligibility}'.`);
+        }
+      }
+
+      if (row.forecast_status === 'position_domain_unresolved') {
+        const governedPosition = context.census?.positions_by_row_id?.[row.population_row_id];
+        if (governedPosition === undefined) {
+          fail('unavailability_reason_unverifiable', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims position_domain_unresolved, but the verified ` +
+            'census carries no position record that could confirm or refute it.');
+        } else if (governedPosition !== null) {
+          // A governed position that exists is either supported or unsupported;
+          // either way it is RESOLVED, and the row must use the status that
+          // matches it rather than this one.
+          fail('unavailability_reason_contradicted', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims position_domain_unresolved while the verified ` +
+            `census assigns position ${JSON.stringify(governedPosition)}.`);
         }
       }
       if (row.forecast_status === 'unsupported_position_domain') {

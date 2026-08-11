@@ -398,6 +398,8 @@ function buildManifest(rowsSha256: string): WeeklyForecastPublicationManifest {
       identity_unresolved: EXAMPLE_ROWS.filter((r) => r.forecast_status === 'identity_unresolved').length,
       identity_conflicting: 0,
       population_ineligible: 0,
+      eligibility_unresolved: 0,
+      position_domain_unresolved: 0,
       no_prior_season_history: EXAMPLE_ROWS.filter((r) => r.forecast_status === 'no_prior_season_history').length,
       roster_state_unresolved: 0,
     },

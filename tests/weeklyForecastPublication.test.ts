@@ -2431,6 +2431,30 @@ describe('the public context documentation matches the validator', () => {
     expect(flatten(wrapped)).toMatch(claim);
   });
 
+  it('publishes the digests the committed fixture actually has', () => {
+    // The contract document quotes both fixture digests as the values a
+    // consumer should expect. Nothing tied them to the fixture, so any change
+    // that shifts the manifest bytes — adding a status to `status_counts`, for
+    // one — left the document quoting a hash that no longer exists. That is the
+    // same drift class as the prose findings on this PR, but worse: a consumer
+    // pinning the published value would refuse the real publication.
+    const doc = readFileSync(
+      path.join(repoRoot, 'docs/weekly-forecast-publication-contract.md'),
+      'utf8',
+    );
+    const fixtureDir = path.join(repoRoot, 'data/fixtures/weekly-forecast-publication');
+    const digestOf = (file: string) =>
+      canonicalForwardJsonSha256(
+        JSON.parse(readFileSync(path.join(fixtureDir, file), 'utf8')),
+      );
+    expect(doc).toContain(
+      `manifest_sha256    = ${digestOf('2026-week-01.example.manifest.json')}`,
+    );
+    expect(doc).toContain(
+      `player_rows_sha256 = ${digestOf('2026-week-01.example.rows.json')}`,
+    );
+  });
+
   it('documents the eligibility binding and no longer calls it inadmissible', () => {
     // The contract document is normative for independent consumers, and it has
     // drifted from the validator four times on this PR. `population_ineligible`
@@ -2757,5 +2781,139 @@ describe('the admission seam is reachable through the package entry point', () =
     // unreachable API, and this comment stops being true.
     const pkg = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
     expect(pkg.exports).toEqual({ '.': './src/public/index.ts' });
+  });
+});
+
+describe('adversarial: 39 — unresolved is its own answer, and it must be sayable', () => {
+  /**
+   * The dead end. Binding availability to `eligible` and a supported position
+   * was right, but the status vocabulary had no way to SAY that the census left
+   * either dimension unresolved. Every candidate status was refused, and since
+   * the contract requires one output row per census row, one such row made the
+   * whole publication un-admittable.
+   *
+   * Note on the harness: a POSITIVE case must build the verification context
+   * from the final publication, not from the original. `suppressRowAs` rewrites
+   * the rows, so a context pinned to the pre-attack row digest fails on
+   * `model_execution_unverified` — which is correct behaviour, and would have
+   * made a green "admits …" test meaningless.
+   */
+  const contextFor = (
+    rows: readonly WeeklyPlayerRow[],
+    manifest: WeeklyForecastPublicationManifest,
+    censusPatch: (census: any) => any,
+  ) => {
+    const base = censusContext(rows, manifest);
+    return { ...base, census: censusPatch({ ...base.census! }) };
+  };
+
+  const eligibilityUnresolved = (rowId: string) => (census: any) => ({
+    ...census,
+    eligibility_states_by_row_id: {
+      ...census.eligibility_states_by_row_id,
+      [rowId]: 'unresolved' as const,
+    },
+  });
+
+  it('admits a row the census leaves eligibility-unresolved', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const rowId = realRows[0].population_row_id;
+    const { manifest, rows } = suppressRowAs(
+      real, realRows, 0, 'eligibility_unresolved', 'census_eligibility_unresolved',
+    );
+    const result = validateWeeklyPublication(
+      manifest, rows, contextFor(rows, manifest, eligibilityUnresolved(rowId)),
+    );
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it('admits a row the census leaves position-unresolved', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const rowId = realRows[0].population_row_id;
+    const { manifest, rows } = suppressRowAs(
+      real, realRows, 0, 'position_domain_unresolved', 'census_position_unresolved',
+    );
+    // A null governed position means a null declared one; that is the separate
+    // identity binding, and the census here is derived from these rows.
+    (rows[0] as any).identity.position = null;
+    const next = clone(manifest) as any;
+    next.digests.player_rows_sha256 = canonicalForwardJsonSha256(rows);
+    next.outputs[0].content_sha256 = next.digests.player_rows_sha256;
+    const result = validateWeeklyPublication(
+      next, rows, contextFor(rows, next, (c) => c),
+    );
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it('refuses "eligibility unresolved" the census resolves', () => {
+    // The suppression direction: a fully eligible row cannot borrow the status.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const { manifest, rows } = suppressRowAs(
+      real, realRows, 0, 'eligibility_unresolved', 'census_eligibility_unresolved',
+    );
+    const result = validateWeeklyPublication(manifest, rows, contextFor(rows, manifest, (c) => c));
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('unavailability_reason_contradicted');
+  });
+
+  it('refuses "position domain unresolved" when the census assigns a position', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const { manifest, rows } = suppressRowAs(
+      real, realRows, 0, 'position_domain_unresolved', 'census_position_unresolved',
+    );
+    const result = validateWeeklyPublication(manifest, rows, contextFor(rows, manifest, (c) => c));
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('unavailability_reason_contradicted');
+  });
+
+  it.each(['eligibility_unresolved', 'position_domain_unresolved'] as const)(
+    'refuses the whole-population version of %s',
+    (status) => {
+      const { manifest: real, rows: realRows } = realisedManifest();
+      let attack = { manifest: real, rows: realRows as WeeklyPlayerRow[] };
+      for (let i = 0; i < realRows.length; i += 1) {
+        attack = suppressRowAs(attack.manifest, attack.rows, i, status, `${status}_reason`);
+      }
+      const result = validateWeeklyPublication(
+        attack.manifest, attack.rows, contextFor(attack.rows, attack.manifest, (c) => c),
+      );
+      expect(result.valid).toBe(false);
+      expect(codes(result)).toContain('unavailability_reason_contradicted');
+    },
+  );
+
+  it('refuses "eligibility unresolved" when no decision is supplied', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const { manifest, rows } = suppressRowAs(
+      real, realRows, 0, 'eligibility_unresolved', 'census_eligibility_unresolved',
+    );
+    const context = contextFor(rows, manifest, (c) => {
+      const next = { ...c };
+      delete next.eligibility_states_by_row_id;
+      return next;
+    });
+    expect(codes(validateWeeklyPublication(manifest, rows, context)))
+      .toContain('unavailability_reason_unverifiable');
+  });
+
+  it('leaves exactly one admissible status for an eligibility-unresolved row', () => {
+    // The dead-end probe, kept as the regression. Before the two statuses
+    // existed this loop found ZERO admissible answers for a row the census
+    // leaves unresolved — which is what made a single such row fatal.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const rowId = realRows[0].population_row_id;
+    const admissible = WEEKLY_FORECAST_STATUSES.filter((status) => {
+      const candidate = status === 'forecast_available'
+        ? { manifest: real, rows: realRows as WeeklyPlayerRow[] }
+        : suppressRowAs(real, realRows, 0, status, `${status}_reason`);
+      return validateWeeklyPublication(
+        candidate.manifest,
+        candidate.rows,
+        contextFor(candidate.rows, candidate.manifest, eligibilityUnresolved(rowId)),
+      ).valid;
+    });
+    expect(admissible).toEqual(['eligibility_unresolved']);
   });
 });

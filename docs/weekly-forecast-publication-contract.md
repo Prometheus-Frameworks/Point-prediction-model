@@ -257,6 +257,27 @@ So each reason is bound to whatever independently verifies it:
 | `no_prior_season_history` | a verified `prior_season_realized_outcomes` or `prior_season_usage_and_role` input holds an eligible record for the row |
 | `unsupported_position_domain` | the **verified census** assigns the row a supported offensive position |
 | `population_ineligible` | the **verified census** records the row's eligibility as anything other than `ineligible`; and refused as unverifiable when no governed decision is supplied at all |
+| `eligibility_unresolved` | the **verified census** records the row's eligibility as anything other than `unresolved` |
+| `position_domain_unresolved` | the **verified census** assigns the row any position at all — a position that exists is resolved, whether or not it is supported |
+
+### Unresolved is its own answer
+
+`eligibility_unresolved` and `position_domain_unresolved` exist because the
+governed census can record either dimension as *unresolved*, and that is not the
+same claim as `population_ineligible` or `unsupported_position_domain`.
+
+Without them such a row had **no truthful status at all**: availability requires
+`eligible` and a supported position, the ineligible/unsupported statuses require
+exactly `ineligible` and a governed unsupported position, and every
+evidence-based alternative is contradicted. Because this contract also requires
+one output row per census row, a *single* unresolved row made the entire
+publication un-admittable. That was verified by probing all eight prior statuses
+against such a row and finding every one refused — not by reading the code.
+
+Both names come from the governed artifact vocabulary (§4 `status.forecast`)
+rather than being invented here. Each is truthful for exactly one governed value,
+so neither is a suppression channel: a row the census resolves cannot borrow
+them, and a row it leaves unresolved cannot be ranked.
 
 One status remains **categorically inadmissible**, for the same reason
 `calibrated` uncertainty is: this contract carries no evidence that could
@@ -472,7 +493,7 @@ timestamp is a declared constant. Repeated runs produce byte-identical output.
 Current fixture digests:
 
 ```
-manifest_sha256    = f1d21b40b8ccd5071c4b59486773a5ed60922137171c8fca7f86733bc87cc1b2
+manifest_sha256    = e0a18c474382f6b221345b487e8a8400239923edf49114166cc8900c79c71ec6
 player_rows_sha256 = 68b219b30b21e618a2c3c06e04e6607395a1bf07f2da7afde0b3b8a0b95759c5
 ```
 
