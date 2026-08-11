@@ -739,6 +739,7 @@ export type WeeklyValidationErrorCode =
   | 'rows_not_canonically_ordered'
   | 'row_input_lineage_unverified'
   | 'census_scope_unverified'
+  | 'input_publication_time_unverified'
   | 'census_membership_mismatch'
   | 'identity_fuzzy_join_used'
   | 'identity_synthetic_namespace_used'
@@ -1538,6 +1539,17 @@ export interface WeeklyRecordLevelInputEvidence {
   verified_forecast_cutoff: string;
   verified_source_as_of: string;
   max_record_effective_at: string;
+  /**
+   * The publication instant read from the artifact itself, for input classes
+   * whose `source_timestamp_locator` is `artifact.published_at`.
+   *
+   * Required to exempt such a class's records from the cutoff comparison.
+   * `verified_source_as_of` cannot stand in: §2 of the forward-artifact
+   * contract defines `source_as_of` as the fact's domain time, states that it
+   * "is not proof that the fact was knowable then", and forbids renaming it
+   * into availability proof.
+   */
+  verified_artifact_published_at?: string;
   record_count_eligible: number;
   record_count_post_cutoff: number;
   record_count_unresolved: number;
@@ -1941,21 +1953,43 @@ export function validateWeeklyPublication(
         'A required input must have at least one record verified eligible at the cutoff.');
     }
     // Which timestamp governs eligibility is a property of the input CLASS, not
-    // a constant. `source_timestamp_locator` says so explicitly, and this was
-    // comparing record times for every class regardless.
+    // a constant. `source_timestamp_locator` says so explicitly, and this used
+    // to compare record times for every class regardless — which rejected a
+    // perfectly governed pre-cutoff schedule, whose records ARE future events by
+    // construction: a schedule published in May lists September games.
     //
-    // For `artifact.published_at` — the Week 1 schedule — the records ARE future
-    // events by construction: a schedule published in May lists September games.
-    // Requiring every record to precede the cutoff therefore rejected a
-    // perfectly governed pre-cutoff snapshot and made a schedule-aware
-    // publication impossible. What the publisher could have known is fixed by
-    // when the artifact was published, and `source_as_of` is already compared
-    // with the cutoff above for every class.
+    // But the exemption must be EARNED, not assumed. The first version of this
+    // rested on `source_as_of <= cutoff`, which proves nothing here: §2 of the
+    // forward-artifact contract defines `source_as_of` as the fact's DOMAIN
+    // time and says outright that it "is not proof that the fact was knowable
+    // then", and that "a semantic `source_as_of` ... is never silently renamed
+    // into availability proof". A schedule genuinely published after the cutoff
+    // could declare a pre-cutoff domain time and, under that version, have its
+    // post-cutoff records exempted — leakage introduced by the fix.
     //
-    // The exemption is deliberately narrow. For `artifact.source_as_of` (the
-    // prior-season classes) the records are historical facts, so a post-cutoff
-    // record there is real leakage and the guard stays.
-    const recordTimesGovern = canonicalRule?.source_timestamp_locator !== 'artifact.published_at';
+    // So the exemption applies only when the consumer supplies an independently
+    // verified publication instant that is itself at or before the cutoff.
+    // Absent that, the class is refused AND the strict record comparison still
+    // applies: no proof, no exemption.
+    //
+    // Narrow by design. For `artifact.source_as_of` (the prior-season classes)
+    // the records are historical facts, so a post-cutoff record is real leakage
+    // and the guard stays regardless.
+    const publishedAtGoverned = canonicalRule?.source_timestamp_locator === 'artifact.published_at';
+    const verifiedPublishedAt =
+      verificationByInputId.get(input.input_id)?.verified_artifact_published_at;
+    const publicationProven =
+      publishedAtGoverned &&
+      isCanonicalUtc(verifiedPublishedAt) &&
+      cutoffMs !== null &&
+      new Date(verifiedPublishedAt as string).getTime() <= cutoffMs;
+    if (publishedAtGoverned && !publicationProven) {
+      fail('input_publication_time_unverified', `${at}.cutoff_evidence`,
+        `Input class "${input.input_class}" is governed by artifact.published_at, so admission ` +
+        'requires an independently verified publication instant at or before the forecast ' +
+        'cutoff. `source_as_of` is domain time and cannot stand in for it.');
+    }
+    const recordTimesGovern = !publicationProven;
     if (recordTimesGovern && evidence?.record_count_post_cutoff > 0) {
       fail('input_post_cutoff', `${at}.cutoff_evidence`, 'Input admits records after the declared cutoff.');
     }

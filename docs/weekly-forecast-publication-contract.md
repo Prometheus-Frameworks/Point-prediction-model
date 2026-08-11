@@ -77,16 +77,25 @@ cutoff, and any input whose availability evidence is unresolved. Unresolved is
 |---|---|---|
 | `record.effective_at` | depth chart, roster state, availability | the latest record's own effective time |
 | `artifact.source_as_of` | both prior-season classes | the artifact's `source_as_of` — and records too, since a post-cutoff record in a historical artifact is leakage |
-| `artifact.published_at` | schedule and opponent context | the artifact's publication time **only** |
+| `artifact.published_at` | schedule and opponent context | an **independently verified** publication instant |
 
 The schedule exemption is not a loosening, it is the difference between a
 forward-looking artifact and a historical one. A Week 1 schedule published in May
 lists September games: its records are future events *by construction*, and they
-say nothing about what the publisher could have known. Comparing them with the
-cutoff rejected a perfectly governed pre-cutoff snapshot and made a
-schedule-aware publication impossible to admit at all. Publication time is what
-carries the information, and it is still compared with the cutoff for every
-class.
+say nothing about what the publisher could have known.
+
+**The exemption must be earned.** It applies only when the verification context
+carries `verified_artifact_published_at` — the publication instant read from the
+artifact — and that instant is itself at or before the cutoff. Absent that proof
+the class is refused, *and* the strict record comparison stays in force.
+
+`source_as_of` cannot stand in for it. §2 of the forward-artifact contract
+defines `source_as_of` as the fact's domain time, states plainly that it "is not
+proof that the fact was knowable then", and forbids a semantic `source_as_of`
+being "silently renamed into availability proof". An earlier revision of this
+contract rested the exemption on exactly that substitution, which let a schedule
+genuinely published after the cutoff declare a truthful pre-cutoff domain time
+and have its post-cutoff records waved through.
 
 ## What a publication must declare
 

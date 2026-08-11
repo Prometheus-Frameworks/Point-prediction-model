@@ -3706,7 +3706,14 @@ describe('adversarial: 47 — the input class decides which timestamp governs', 
       ...base,
       record_level_input_evidence: base.record_level_input_evidence!.map((e) =>
         e.input_id === scheduleId
-          ? { ...e, max_record_effective_at: WEEK_ONE_KICKOFF, record_count_post_cutoff: rows.length }
+          ? {
+            ...e,
+            max_record_effective_at: WEEK_ONE_KICKOFF,
+            record_count_post_cutoff: rows.length,
+            // Independently verified publication instant. Without this the
+            // exemption is not earned and the class is refused.
+            verified_artifact_published_at: SCHEDULE_PUBLISHED,
+          }
           : e),
     };
   };
@@ -3771,5 +3778,101 @@ describe('adversarial: 47 — the input class decides which timestamp governs', 
     });
     expect(result.valid).toBe(false);
     expect(codes(result)).toContain('input_post_cutoff');
+  });
+});
+
+describe('adversarial: 48 — the schedule exemption must be earned', () => {
+  /**
+   * The correction to adversarial 47. That round exempted schedule records from
+   * the cutoff comparison on the reasoning that `source_as_of <= cutoff` already
+   * covers publication time. It does not, and §2 of the forward-artifact
+   * contract says so in terms:
+   *
+   *   "`source_as_of` describes the fact's domain time. It is not proof that
+   *    the fact was knowable then."
+   *   "A semantic `source_as_of` ... is never silently renamed into
+   *    availability proof."
+   *
+   * The exemption did exactly that renaming, so a schedule genuinely published
+   * AFTER the cutoff could declare a pre-cutoff domain time and have its
+   * post-cutoff records waved through — leakage introduced by the fix.
+   */
+  const WEEK_ONE_KICKOFF = '2026-09-13T17:00:00.000Z';
+  const PRE_CUTOFF_DOMAIN_TIME = '2026-05-14T00:00:00.000Z';
+  const PUBLISHED_AFTER_CUTOFF = '2026-09-11T00:00:00.000Z';
+
+  const scheduleFixture = (publishedAt: string | undefined) => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const manifest = clone(real) as any;
+    const scheduleId = 'tiber-data-schedule-2026-w1';
+    manifest.artifact_inputs = [...manifest.artifact_inputs, {
+      input_id: scheduleId,
+      input_class: 'schedule_and_opponent_context',
+      owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      owner_commit_sha: manifest.artifact_inputs[0].owner_commit_sha,
+      artifact_type: 'weekly_schedule',
+      artifact_version: 'weekly-schedule-v1',
+      uri_or_path: 'tiber-data://schedule_and_opponent_context',
+      content_sha256: '9'.repeat(63) + 'a',
+      // Domain time, pre-cutoff — truthful, and NOT availability proof.
+      source_as_of: PRE_CUTOFF_DOMAIN_TIME,
+      availability_rule_id: 'published_at_or_before_cutoff',
+      cutoff_evidence: {
+        input_class: 'schedule_and_opponent_context',
+        availability_rule_id: 'published_at_or_before_cutoff',
+        source_timestamp_locator: 'artifact.published_at',
+        normalization_rule_id: manifest.artifact_inputs[0].cutoff_evidence.normalization_rule_id,
+        self_reported_status: 'eligible',
+        record_count_eligible: realRows.length,
+        record_count_post_cutoff: realRows.length,
+        record_count_unresolved: 0,
+        record_level_verification: 'locally_verified',
+      },
+      limitations: [],
+    }];
+    manifest.scoring_profile.source_reconciliation.source_input_sha256s =
+      [...new Set(manifest.artifact_inputs.map((i: any) => i.content_sha256))].sort() as string[];
+    const base = censusContext(realRows, manifest);
+    const context = {
+      ...base,
+      record_level_input_evidence: base.record_level_input_evidence!.map((e) =>
+        e.input_id === scheduleId
+          ? {
+            ...e,
+            max_record_effective_at: WEEK_ONE_KICKOFF,
+            record_count_post_cutoff: realRows.length,
+            ...(publishedAt === undefined ? {} : { verified_artifact_published_at: publishedAt }),
+          }
+          : e),
+    };
+    return validateWeeklyPublication(manifest, realRows, context);
+  };
+
+  it('refuses a schedule published after the cutoff despite a pre-cutoff source_as_of', () => {
+    // The attack the previous round opened. Domain time is truthful and
+    // pre-cutoff; the artifact was published two days after the cutoff.
+    const result = scheduleFixture(PUBLISHED_AFTER_CUTOFF);
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('input_publication_time_unverified');
+  });
+
+  it('refuses a schedule with no verified publication instant at all', () => {
+    // No proof, no exemption — the class is refused rather than falling open.
+    const result = scheduleFixture(undefined);
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('input_publication_time_unverified');
+  });
+
+  it('still applies the strict record rule when the exemption is not earned', () => {
+    // Fail-closed in both directions: an unearned exemption does not merely
+    // lose its own check, it leaves the strict comparison in force.
+    const result = scheduleFixture(undefined);
+    expect(codes(result)).toContain('input_post_cutoff');
+  });
+
+  it('admits a schedule whose verified publication instant precedes the cutoff', () => {
+    const result = scheduleFixture(PRE_CUTOFF_DOMAIN_TIME);
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
   });
 });
