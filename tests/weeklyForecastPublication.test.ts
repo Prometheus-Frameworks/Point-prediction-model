@@ -138,6 +138,8 @@ function censusContext(
       status: 'passed' as const,
       evidence_sha256: forManifest.scoring_profile.source_reconciliation?.evidence_ref?.content_sha256 ?? '',
       scoring_profile_sha256: forManifest.scoring_profile.profile_sha256,
+      // Read from the verified artifact, not copied from the manifest.
+      source_input_sha256s: [...new Set(forManifest.artifact_inputs.map((i) => i.content_sha256))],
     },
     expected_census_identity: {
       owner_repository: WEEKLY_GOVERNED_CENSUS_OWNER,
@@ -1824,5 +1826,56 @@ describe('adversarial: 22 — scoring reconciliation cannot certify itself', () 
         evidence_sha256: 'c'.repeat(63) + 'd',
       },
     }))).toContain('scoring_reconciliation_invalid');
+  });
+});
+
+describe('adversarial: 23 — verified reconciliation must cover the admitted inputs', () => {
+  // The reported bypass, and a direct consequence of leaving optional input
+  // classes unpinned: they cannot suppress a player, but swapping one changes
+  // the admitted hash set, and a genuine `passed` reconciliation covering the
+  // OLD set could still be cited. The earlier coverage comparison ran on
+  // manifest-owned copies on both sides, so it could not see the difference.
+
+  it('refuses a genuine reconciliation that covers a different input set', () => {
+    // The manifest stays entirely self-consistent: it declares its own
+    // reconciliation over exactly the inputs it admits. Only the VERIFIED
+    // artifact disagrees, covering one hash the publication does not admit —
+    // which is what reusing a real `passed` reconciliation for another input
+    // set looks like from here.
+    //
+    // Note this constructs the divergence directly rather than by swapping an
+    // optional input: the committed fixture carries only the three required
+    // classes, so there is no optional input in it to swap. The binding under
+    // test is the same either way.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const covered = context.verified_scoring_reconciliation!.source_input_sha256s;
+    const result = validateWeeklyPublication(real, realRows, {
+      ...context,
+      verified_scoring_reconciliation: {
+        ...context.verified_scoring_reconciliation!,
+        source_input_sha256s: [...covered.slice(1), 'b'.repeat(63) + 'f'],
+      },
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('scoring_reconciliation_invalid');
+  });
+
+  it('refuses when the verified artifact covers no inputs at all', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    expect(codes(validateWeeklyPublication(real, realRows, {
+      ...context,
+      verified_scoring_reconciliation: {
+        ...context.verified_scoring_reconciliation!,
+        source_input_sha256s: [],
+      },
+    }))).toContain('scoring_reconciliation_invalid');
+  });
+
+  it('admits when the verified coverage matches the admitted inputs', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .not.toContain('scoring_reconciliation_invalid');
   });
 });

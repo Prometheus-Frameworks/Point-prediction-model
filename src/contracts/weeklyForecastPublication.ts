@@ -1224,6 +1224,17 @@ export interface WeeklyVerificationContext {
     status: 'passed' | 'failed' | 'unavailable';
     evidence_sha256: string;
     scoring_profile_sha256: string;
+    /**
+     * The input digests the verified reconciliation artifact actually covers,
+     * read from that artifact.
+     *
+     * Without it, the admitted-hash comparison runs entirely on manifest-owned
+     * copies, so a genuine `passed` artifact covering input set A can be cited
+     * while the manifest declares input set B. Optional inputs are not
+     * consumer-pinned — they cannot suppress a player — which is exactly what
+     * makes swapping one and reusing an unrelated reconciliation reachable.
+     */
+    source_input_sha256s: readonly string[];
   };
   expected_census_identity?: {
     owner_repository: string;
@@ -1522,6 +1533,18 @@ export function validateWeeklyPublication(
       fail('scoring_reconciliation_invalid', 'verification_context.verified_scoring_reconciliation',
         'Verified scoring reconciliation must report passed, bind the exact evidence digest the ' +
         'manifest cites, and reconcile to the canonical scoring profile.');
+    } else if (
+      // The coverage comparison above runs on manifest-owned copies on both
+      // sides. Comparing the hashes the VERIFIED artifact actually covers with
+      // the admitted inputs is what stops a genuine `passed` reconciliation for
+      // one input set being cited for another.
+      canonicalForwardJsonSha256(
+        [...new Set(verifiedReconciliation.source_input_sha256s ?? [])]
+          .sort(compareForwardCanonicalStrings),
+      ) !== canonicalForwardJsonSha256(canonicalInputHashes)
+    ) {
+      fail('scoring_reconciliation_invalid', 'verification_context.verified_scoring_reconciliation',
+        'The verified reconciliation covers a different input set than the publication admits.');
     }
   }
 

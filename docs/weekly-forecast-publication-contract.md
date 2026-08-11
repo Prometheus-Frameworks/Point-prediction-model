@@ -285,7 +285,13 @@ pinned, since they cannot suppress a player.
 sets its own `status: 'passed'`, repeats its own input hashes, and cites any
 syntactically valid reference. A real publication must supply
 `verified_scoring_reconciliation` carrying the verified result, the exact
-evidence digest the manifest cites, and the canonical profile digest.
+evidence digest the manifest cites, the canonical profile digest, and the input
+digests that artifact actually covers. That last field is what stops a genuine
+`passed` reconciliation for one input set being cited for another — the
+manifest's own coverage copy sits on both sides of the earlier comparison, so it
+cannot detect the substitution. It matters precisely because optional inputs are
+unpinned: they cannot suppress a player, but swapping one does change the
+admitted hash set.
 
 The verification context also carries the census's own `effective_at`, read from
 the exact bytes. The manifest duplicates that value and the duplicate must match;
