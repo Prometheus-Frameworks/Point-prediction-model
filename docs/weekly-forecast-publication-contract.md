@@ -255,9 +255,19 @@ So each reason is bound to whatever independently verifies it:
 | `identity_unresolved`, `identity_conflicting` | the verified census resolves the row to a canonical id, or the row itself declares `identity_status: 'resolved'` |
 | `unavailable_missing_required_inputs` | every required input carries verified membership **and** all of them hold an eligible record for the row |
 | `no_prior_season_history` | a verified `prior_season_realized_outcomes` or `prior_season_usage_and_role` input holds an eligible record for the row |
-| `roster_state_unresolved` | the verified `roster_and_team_assignment_state` input holds an eligible record for the row |
-| `population_ineligible` | the row is a member of the verified governed census population |
 | `unsupported_position_domain` | the row declares a supported offensive position |
+
+Two statuses are **categorically inadmissible**, for the same reason
+`calibrated` uncertainty is: this contract carries no evidence that could
+confirm or refute them in either direction, and a status whose truth cannot be
+verified is not a reason — it is a free suppression channel. A publisher could
+otherwise mark every row with one of them, recompute the counts, digests,
+receipt and trusted binding, and admit a publication containing no rankings.
+
+| Status | Refused because | Admitting it would require |
+| --- | --- | --- |
+| `population_ineligible` | census membership implies nothing about eligibility — the census is deliberately broad and *includes* ineligible records — and nothing else in the document speaks to it | a governed eligibility decision carried in the verification context |
+| `roster_state_unresolved` | membership in the roster input establishes only that a *timely* record exists; the governed row shape explicitly admits `team_assignment_status: unknown \| unavailable`, so a record can be present while the state is genuinely unresolved | the verified `team_assignment_status` of that record |
 
 Two limits are deliberate. **Absence of evidence stays silent**: where an input
 does not claim `locally_verified`, or claims it and supplies no membership, the

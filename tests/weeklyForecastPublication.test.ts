@@ -1323,36 +1323,72 @@ describe('adversarial: 17 — an unavailability reason must lose to the verified
     ))).toContain('unavailability_reason_contradicted');
   });
 
-  it('refuses "roster state unresolved" when the verified roster input holds the row', () => {
+  it('refuses "roster state unresolved" as unverifiable, not as contradicted', () => {
+    // An earlier revision refused this because the roster input held a record
+    // for the row. That basis was wrong: membership establishes only that a
+    // TIMELY record exists, and the governed row shape explicitly admits
+    // `team_assignment_status: unknown | unavailable`, so a record can be
+    // present while the state is genuinely unresolved. Absent the verified
+    // assignment status, neither direction is decidable — so the status is not
+    // admission-capable at all.
     const { manifest: real, rows: realRows } = realisedManifest();
     const attack = suppressRowAs(
       real, realRows, 0,
       'roster_state_unresolved',
       'roster_state_unknown_for_population_row',
     );
-    expect(codes(validateWeeklyPublication(
+    const result = codes(validateWeeklyPublication(
       attack.manifest, attack.rows, censusContext(realRows, real),
-    ))).toContain('unavailability_reason_contradicted');
+    ));
+    expect(result).toContain('unavailability_reason_unverifiable');
+    expect(result).not.toContain('unavailability_reason_contradicted');
   });
 
-  it('still allows "population ineligible" for a census member', () => {
-    // An earlier revision of this suite pinned the opposite, on the reasoning
-    // that census membership and ineligibility contradict each other. They do
-    // not: §3.6 of the forward-artifact contract specifies a BROAD census that
+  it('refuses "population ineligible" as unverifiable, not on census membership', () => {
+    // Two wrong answers preceded this one. First the status was refused for
+    // any census member — but §3.6 specifies a deliberately BROAD census that
     // "must include supported, unsupported, eligible, ineligible, and
-    // unresolved records so that whole domains cannot disappear before
-    // reconciliation". Every row is a census member by construction, so the
-    // old rule made this required status impossible to declare anywhere.
+    // unresolved records", so membership implies nothing about eligibility and
+    // every row is a member by construction. Then the check was removed
+    // outright, which made the status declarable on assertion alone.
+    //
+    // Both directions are undecidable without a governed eligibility decision,
+    // so the status is not admission-capable — and the refusal must cite that,
+    // not census membership.
     const { manifest: real, rows: realRows } = realisedManifest();
     const attack = suppressRowAs(
       real, realRows, 0,
       'population_ineligible',
       'population_row_outside_bounded_scope',
     );
-    expect(codes(validateWeeklyPublication(
+    const result = codes(validateWeeklyPublication(
       attack.manifest, attack.rows, censusContext(realRows, real),
-    ))).not.toContain('unavailability_reason_contradicted');
+    ));
+    expect(result).toContain('unavailability_reason_unverifiable');
+    expect(result).not.toContain('unavailability_reason_contradicted');
   });
+
+  it.each(['population_ineligible', 'roster_state_unresolved'] as const)(
+    'refuses a publication that suppresses EVERY row as %s',
+    (status) => {
+      // The reported escalation: repeat the single-row transformation across
+      // the whole population and recompute the publisher-controlled counts,
+      // digests, receipt and trusted binding. Every structural check passes and
+      // the result is an admitted publication containing no rankings at all.
+      const { manifest: real, rows: realRows } = realisedManifest();
+      let attack = { manifest: real, rows: realRows as WeeklyPlayerRow[] };
+      for (let i = 0; i < realRows.length; i += 1) {
+        attack = suppressRowAs(attack.manifest, attack.rows, i, status, `${status}_reason`);
+      }
+      expect(attack.rows.every((r) => r.forecast_status === status)).toBe(true);
+
+      const result = validateWeeklyPublication(
+        attack.manifest, attack.rows, censusContext(realRows, real),
+      );
+      expect(result.valid).toBe(false);
+      expect(codes(result)).toContain('unavailability_reason_unverifiable');
+    },
+  );
 
   it('refuses "unsupported position domain" for a row declaring a supported position', () => {
     const { manifest: real, rows: realRows } = realisedManifest();

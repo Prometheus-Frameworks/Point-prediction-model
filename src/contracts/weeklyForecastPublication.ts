@@ -675,6 +675,7 @@ export type WeeklyValidationErrorCode =
   | 'rank_on_unavailable_row'
   | 'unavailable_row_missing_reason'
   | 'unavailability_reason_contradicted'
+  | 'unavailability_reason_unverifiable'
   | 'manifest_lifecycle_claims_eligibility'
   | 'manifest_identity_invalid'
   | 'scoring_profile_mismatch'
@@ -2010,29 +2011,41 @@ export function validateWeeklyPublication(
         );
       }
 
-      if (row.forecast_status === 'roster_state_unresolved') {
-        contradicts(
-          verifiedInputsHolding(row.population_row_id, 'roster_and_team_assignment_state'),
-          'the verified roster/team-assignment input holds an eligible record for it',
-        );
+      // Two statuses assert facts this contract carries NO evidence for, in
+      // either direction. They are therefore categorically inadmissible here,
+      // exactly as `calibrated` uncertainty is above and for the same reason:
+      // a status whose truth cannot be verified is not a reason, it is a free
+      // suppression channel. A publisher could otherwise convert every row to
+      // one of them, recompute the counts, digests, receipt and trusted
+      // binding, and admit a publication containing no rankings at all.
+      //
+      //  - `population_ineligible` needs a governed eligibility decision. It
+      //    cannot be derived from census membership: §3.6 of the
+      //    forward-artifact contract specifies a deliberately broad census that
+      //    "must include supported, unsupported, eligible, ineligible, and
+      //    unresolved records so that whole domains cannot disappear before
+      //    reconciliation". Membership says nothing about eligibility either
+      //    way — which is why the previous revision's membership binding was
+      //    wrong, and why removing it without replacement was also wrong.
+      //
+      //  - `roster_state_unresolved` needs the verified `team_assignment_status`
+      //    of the roster record. Membership in the roster input establishes
+      //    only that a timely record exists; the governed row shape explicitly
+      //    admits `unknown` and `unavailable` assignment states, so a record
+      //    can be present while the state is genuinely unresolved.
+      //
+      // Admitting either requires carrying that evidence in
+      // `WeeklyVerificationContext` and binding to it. Until then the honest
+      // answer is refusal, not silent acceptance. Tracked as parked follow-up.
+      if (
+        row.forecast_status === 'population_ineligible' ||
+        row.forecast_status === 'roster_state_unresolved'
+      ) {
+        fail('unavailability_reason_unverifiable', `${at}.forecast_status`,
+          `Row "${row.population_row_id}" claims ${row.forecast_status}, but this contract ` +
+          'carries no evidence that could confirm or refute it. Such a status cannot be ' +
+          'admission-capable: it would let any row be suppressed on assertion alone.');
       }
-
-      // `population_ineligible` is deliberately NOT bound to census membership.
-      //
-      // An earlier revision rejected it whenever the row was a census member,
-      // reasoning that membership and ineligibility contradict each other. They
-      // do not. The governed census is specified as a *broad* population — see
-      // §3.6 of the forward-artifact contract proposal: "The source artifact is
-      // a broad population census, not an already-filtered target list. It must
-      // include supported, unsupported, eligible, ineligible, and unresolved
-      // records so that whole domains cannot disappear before reconciliation."
-      //
-      // Every row in a valid publication is a census member by construction, so
-      // that check made `population_ineligible` impossible to declare in any
-      // fully verified publication — turning a required reconciliation status
-      // into a dead branch. Eligibility is governed evidence this contract does
-      // not yet carry; binding the status properly needs that evidence, and
-      // until it exists the status stays declarable.
       if (
         row.forecast_status === 'unsupported_position_domain' &&
         (WEEKLY_SUPPORTED_POSITIONS as readonly string[]).includes(row.identity?.position ?? '')
