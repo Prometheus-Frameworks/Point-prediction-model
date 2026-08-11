@@ -185,6 +185,12 @@ function censusContext(
       positions_by_row_id: Object.fromEntries(
         rowSet.map((r) => [r.population_row_id, r.identity?.position ?? null]),
       ),
+      team_abbrs_by_row_id: Object.fromEntries(
+        rowSet.map((r) => [r.population_row_id, r.identity?.nfl_team_abbr ?? null]),
+      ),
+      display_names_by_row_id: Object.fromEntries(
+        rowSet.map((r) => [r.population_row_id, r.identity!.display_name]),
+      ),
       identity_states_by_row_id: Object.fromEntries(
         rowSet.map((r) => [r.population_row_id, r.identity!.identity_status]),
       ),
@@ -2639,5 +2645,117 @@ describe('adversarial: 37 — an ineligible player cannot be ranked', () => {
     const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
     expect(result.errors).toEqual([]);
     expect(result.valid).toBe(true);
+  });
+});
+
+describe('adversarial: 38 — governed identity fields published to consumers', () => {
+  /**
+   * `nfl_team_abbr` and `display_name` are emitted on every admitted row and are
+   * what a consumer actually shows and groups by. Both were bound to nothing.
+   *
+   * A verified execution digest proves the run PRODUCED the value; it is not
+   * evidence that the value matches the governed source. So a genuine execution
+   * emitting stale team metadata — or a publisher editing the name — survived
+   * admission under a correct canonical id, and the wrong player appeared under
+   * the right identity.
+   */
+  const withCensus = (
+    patch: (census: any) => any,
+  ) => {
+    const { manifest, rows } = realisedManifest();
+    const base = censusContext(rows, manifest);
+    return validateWeeklyPublication(manifest, rows, {
+      ...base, census: patch({ ...base.census! }),
+    });
+  };
+
+  const firstRowId = () => realisedManifest().rows[0].population_row_id;
+
+  it('refuses a row whose team abbreviation contradicts the census', () => {
+    const rowId = firstRowId();
+    const result = withCensus((c) => ({
+      ...c,
+      team_abbrs_by_row_id: { ...c.team_abbrs_by_row_id, [rowId]: 'ZZZ' },
+    }));
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('identity_evidence_unbound');
+  });
+
+  it('refuses a row whose display name contradicts the census', () => {
+    const rowId = firstRowId();
+    const result = withCensus((c) => ({
+      ...c,
+      display_names_by_row_id: { ...c.display_names_by_row_id, [rowId]: 'Someone Else' },
+    }));
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('identity_evidence_unbound');
+  });
+
+  it('refuses a null team the census records as assigned', () => {
+    // Null is a value, not an exemption — the same asymmetry that let a
+    // resolved canonical id be downgraded to null and the player suppressed.
+    const rowId = firstRowId();
+    const result = withCensus((c) => ({
+      ...c,
+      team_abbrs_by_row_id: { ...c.team_abbrs_by_row_id, [rowId]: null },
+    }));
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('identity_evidence_unbound');
+  });
+
+  it.each(['team_abbrs_by_row_id', 'display_names_by_row_id'] as const)(
+    'refuses a context supplying no %s at all',
+    (field) => {
+      const { manifest, rows } = realisedManifest();
+      const context = censusContext(rows, manifest);
+      delete (context.census as any)[field];
+      expect(codes(validateWeeklyPublication(manifest, rows, context)))
+        .toContain('identity_evidence_unbound');
+    },
+  );
+
+  it.each(['team_abbrs_by_row_id', 'display_names_by_row_id'] as const)(
+    'refuses when %s omits one row',
+    (field) => {
+      const rowId = firstRowId();
+      const { manifest, rows } = realisedManifest();
+      const base = censusContext(rows, manifest);
+      const map = { ...(base.census as any)[field] };
+      delete map[rowId];
+      expect(codes(validateWeeklyPublication(manifest, rows, {
+        ...base, census: { ...base.census!, [field]: map },
+      }))).toContain('identity_evidence_unbound');
+    },
+  );
+
+  it('admits the unmodified publication', () => {
+    const { manifest, rows } = realisedManifest();
+    const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+});
+
+describe('the admission seam is reachable through the package entry point', () => {
+  it('re-exports the weekly contract from src/public/index.ts', async () => {
+    // `package.json` exposes only `.` -> src/public/index.ts, and its exports
+    // map excludes source subpaths, so a consumer that cannot import the seam
+    // from this module cannot import it at all. The contract document advertises
+    // `admitWeeklyPublication` as the Fantasy consumer seam; that promise is
+    // only true if this passes.
+    const entry: any = await import('../src/public/index.js');
+    expect(typeof entry.admitWeeklyPublication).toBe('function');
+    expect(typeof entry.validateWeeklyPublication).toBe('function');
+    expect(typeof entry.isWeeklyPublicationDocument).toBe('function');
+    expect(entry.WEEKLY_PUBLICATION_ARTIFACT_VERSION)
+      .toBe(WEEKLY_PUBLICATION_ARTIFACT_VERSION);
+  });
+
+  it('exposes only the entry point in the package exports map', () => {
+    // Pins the premise of the test above: if a subpath export is ever added,
+    // that test stops being the only thing standing between consumers and an
+    // unreachable API, and this comment stops being true.
+    const pkg = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+    expect(pkg.exports).toEqual({ '.': './src/public/index.ts' });
   });
 });

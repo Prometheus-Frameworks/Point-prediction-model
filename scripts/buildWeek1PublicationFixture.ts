@@ -490,6 +490,12 @@ function exampleCensusContext(
       positions_by_row_id: Object.fromEntries(
         EXAMPLE_ROWS.map((row) => [row.population_row_id, row.identity?.position ?? null]),
       ),
+      team_abbrs_by_row_id: Object.fromEntries(
+        EXAMPLE_ROWS.map((row) => [row.population_row_id, row.identity?.nfl_team_abbr ?? null]),
+      ),
+      display_names_by_row_id: Object.fromEntries(
+        EXAMPLE_ROWS.map((row) => [row.population_row_id, row.identity!.display_name]),
+      ),
       identity_states_by_row_id: Object.fromEntries(
         EXAMPLE_ROWS.map((row) => [row.population_row_id, row.identity!.identity_status]),
       ),

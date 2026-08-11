@@ -1354,6 +1354,31 @@ export interface WeeklyVerificationContext {
      */
     positions_by_row_id?: Readonly<Record<string, string | null>>;
     /**
+     * population_row_id → the NFL team abbreviation the governed census assigns,
+     * or null where the census itself records none.
+     *
+     * Published on every admitted row and used by consumers to display and group
+     * players, but bound to nothing: a verified execution digest proves the run
+     * emitted the value, not that the value matches the governed source. Stale
+     * or wrong team metadata therefore passed admission intact.
+     *
+     * This is the team IDENTITY the census carries, which the forward-artifact
+     * contract keeps deliberately separate from assignment STATE
+     * (`team_assignment_status`, roster-input evidence). Binding it here does not
+     * make `roster_state_unresolved` admissible — that still needs the roster
+     * record's own status, which this contract does not carry.
+     */
+    team_abbrs_by_row_id?: Readonly<Record<string, string | null>>;
+    /**
+     * population_row_id → the display name the governed census assigns.
+     *
+     * Not named in the finding that prompted the team binding, but the identical
+     * defect one field over: "display only" is precisely what a consumer shows a
+     * user, so an unbound value relabels a governed player under a name the
+     * census never assigned.
+     */
+    display_names_by_row_id?: Readonly<Record<string, string>>;
+    /**
      * population_row_id → the identity state the governed census records.
      *
      * `canonical_player_ids_by_row_id` cannot distinguish `unresolved` from
@@ -2533,6 +2558,46 @@ export function validateWeeklyPublication(
           fail('identity_evidence_unbound', `${at}.identity.position`,
             `Row "${row.population_row_id}" declares position ${JSON.stringify(declaredPosition)} ` +
             `while the verified census assigns ${JSON.stringify(expectedPosition)}.`);
+        }
+      }
+
+      // Team abbreviation and display name are governed census fields published
+      // on every admitted row, and were bound to nothing. A verified execution
+      // digest proves the run emitted them; it says nothing about whether they
+      // match the governed source, so stale or wrong values reached consumers
+      // intact under a correct canonical id.
+      //
+      // Same shape as the position binding above, and fail-closed the same way.
+      // `display_name` was not named in the finding — it is the identical defect
+      // one field over, and fixing only the reported one would leave it.
+      const censusBoundIdentityFields = [
+        {
+          map: context.census?.team_abbrs_by_row_id,
+          declared: row.identity?.nfl_team_abbr ?? null,
+          field: 'nfl_team_abbr',
+          noun: 'team abbreviations',
+        },
+        {
+          map: context.census?.display_names_by_row_id,
+          declared: row.identity?.display_name ?? null,
+          field: 'display_name',
+          noun: 'display names',
+        },
+      ] as const;
+      for (const { map, declared, field, noun } of censusBoundIdentityFields) {
+        if (!map) {
+          fail('identity_evidence_unbound', `${at}.identity.${field}`,
+            `Verified census ${noun} are required to bind row ${noun}.`);
+          continue;
+        }
+        const expected = map[row.population_row_id];
+        if (expected === undefined) {
+          fail('identity_evidence_unbound', `${at}.identity.${field}`,
+            `The verified census carries no ${field} for "${row.population_row_id}".`);
+        } else if (declared !== expected) {
+          fail('identity_evidence_unbound', `${at}.identity.${field}`,
+            `Row "${row.population_row_id}" declares ${field} ${JSON.stringify(declared)} ` +
+            `while the verified census assigns ${JSON.stringify(expected)}.`);
         }
       }
 

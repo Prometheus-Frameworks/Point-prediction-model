@@ -396,6 +396,20 @@ consistent and suppressing it — and repeating that across the population empti
 the rankings on assertion alone. Where the census records the position as
 unknown the status is refused as unverifiable rather than assumed true.
 
+`nfl_team_abbr` and `display_name` are bound the same way, as
+`team_abbrs_by_row_id` and `display_names_by_row_id`. Both are published on every
+admitted row and are what a consumer displays and groups by, and both were bound
+to nothing. A verified execution digest proves the run *produced* a value; it is
+not evidence that the value matches the governed source, so a genuine execution
+emitting stale team metadata passed admission intact under a correct canonical
+id. Null is a value here, not an exemption: a null team where the census records
+an assignment is refused.
+
+Binding the team *identity* does not make `roster_state_unresolved` admissible.
+The forward-artifact contract keeps identity separate from assignment *state*
+(`team_assignment_status`), and this contract still carries no evidence for the
+latter.
+
 Two limits are deliberate. **Absence of evidence stays silent**: where an input
 does not claim `locally_verified`, or claims it and supplies no membership, the
 row's claim is undecidable and is not rejected on suspicion — such a document is
@@ -491,6 +505,13 @@ make. The load-bearing property: **refusal never falls back to FORGE.**
 
 `admitWeeklyPublication()` accepts `unknown` for all three documents and never
 throws.
+
+It is importable. `package.json` exposes a single entry point (`.` →
+`src/public/index.ts`) and its `exports` map excludes source subpaths, so a seam
+this document advertises but that entry point does not re-export is a seam no
+consumer can reach through any supported specifier. The weekly contract is
+re-exported there, and a test asserts both halves of that — the re-export, and
+the single-entry-point premise that makes it necessary.
 
 | input | decision |
 |---|---|
