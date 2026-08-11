@@ -1940,7 +1940,23 @@ export function validateWeeklyPublication(
       fail('input_cutoff_unresolved', `${at}.cutoff_evidence.record_count_eligible`,
         'A required input must have at least one record verified eligible at the cutoff.');
     }
-    if (evidence?.record_count_post_cutoff > 0) {
+    // Which timestamp governs eligibility is a property of the input CLASS, not
+    // a constant. `source_timestamp_locator` says so explicitly, and this was
+    // comparing record times for every class regardless.
+    //
+    // For `artifact.published_at` — the Week 1 schedule — the records ARE future
+    // events by construction: a schedule published in May lists September games.
+    // Requiring every record to precede the cutoff therefore rejected a
+    // perfectly governed pre-cutoff snapshot and made a schedule-aware
+    // publication impossible. What the publisher could have known is fixed by
+    // when the artifact was published, and `source_as_of` is already compared
+    // with the cutoff above for every class.
+    //
+    // The exemption is deliberately narrow. For `artifact.source_as_of` (the
+    // prior-season classes) the records are historical facts, so a post-cutoff
+    // record there is real leakage and the guard stays.
+    const recordTimesGovern = canonicalRule?.source_timestamp_locator !== 'artifact.published_at';
+    if (recordTimesGovern && evidence?.record_count_post_cutoff > 0) {
       fail('input_post_cutoff', `${at}.cutoff_evidence`, 'Input admits records after the declared cutoff.');
     }
     if (evidence?.record_count_unresolved > 0 || evidence?.self_reported_status === 'unresolved') {
@@ -2020,13 +2036,16 @@ export function validateWeeklyPublication(
             `source for class "${input.input_class}".`);
         }
       }
+      // Same locator rule as above. The shape checks apply to every class; only
+      // the two ORDERING comparisons are class-dependent, because only they
+      // assume a record's own time is what makes it admissible.
       if (
         !isCanonicalUtc(verification.max_record_effective_at) ||
         !isCanonicalUtc(verification.verified_forecast_cutoff) ||
         !isCanonicalUtc(verification.verified_source_as_of) ||
-        (cutoffMs !== null &&
+        (recordTimesGovern && cutoffMs !== null &&
           new Date(verification.max_record_effective_at).getTime() > cutoffMs) ||
-        (isCanonicalUtc(verification.verified_source_as_of) &&
+        (recordTimesGovern && isCanonicalUtc(verification.verified_source_as_of) &&
           new Date(verification.max_record_effective_at).getTime() >
             new Date(verification.verified_source_as_of).getTime())
       ) {

@@ -70,6 +70,24 @@ The validator rejects a prohibited class, any input reporting records after the
 cutoff, and any input whose availability evidence is unresolved. Unresolved is
 **not** treated as eligible.
 
+**Which timestamp governs is a property of the class.** Each class declares a
+`source_timestamp_locator`, and the cutoff comparison follows it:
+
+| locator | classes | what must precede the cutoff |
+|---|---|---|
+| `record.effective_at` | depth chart, roster state, availability | the latest record's own effective time |
+| `artifact.source_as_of` | both prior-season classes | the artifact's `source_as_of` — and records too, since a post-cutoff record in a historical artifact is leakage |
+| `artifact.published_at` | schedule and opponent context | the artifact's publication time **only** |
+
+The schedule exemption is not a loosening, it is the difference between a
+forward-looking artifact and a historical one. A Week 1 schedule published in May
+lists September games: its records are future events *by construction*, and they
+say nothing about what the publisher could have known. Comparing them with the
+cutoff rejected a perfectly governed pre-cutoff snapshot and made a
+schedule-aware publication impossible to admit at all. Publication time is what
+carries the information, and it is still compared with the cutoff for every
+class.
+
 ## What a publication must declare
 
 - target season and target NFL scoring week, with `target_kind:

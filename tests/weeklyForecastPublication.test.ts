@@ -3640,3 +3640,136 @@ describe('adversarial: 46 — per-row lineage and census scope', () => {
     expect(result.valid).toBe(true);
   });
 });
+
+describe('adversarial: 47 — the input class decides which timestamp governs', () => {
+  /**
+   * A false rejection, not a bypass — the more dangerous kind, because a green
+   * suite reads as proof the rule is right.
+   *
+   * `source_timestamp_locator` says explicitly which timestamp makes an input
+   * admissible, and the cutoff comparisons ignored it. For
+   * `schedule_and_opponent_context` the locator is `artifact.published_at`, and
+   * the records ARE future events by construction: a schedule published in May
+   * lists September games. Requiring every record to precede a September 9
+   * cutoff therefore rejected a perfectly governed pre-cutoff snapshot and made
+   * a schedule-aware publication impossible to admit at all.
+   */
+  const WEEK_ONE_KICKOFF = '2026-09-13T17:00:00.000Z'; // after the cutoff, by design
+  const SCHEDULE_PUBLISHED = '2026-05-14T00:00:00.000Z'; // long before it
+
+  /** Adds a governed, pre-cutoff schedule input whose games fall after the cutoff. */
+  const withSchedule = () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const manifest = clone(real) as any;
+    const scheduleId = 'tiber-data-schedule-2026-w1';
+    manifest.artifact_inputs = [...manifest.artifact_inputs, {
+      input_id: scheduleId,
+      input_class: 'schedule_and_opponent_context',
+      owner_repository: 'Prometheus-Frameworks/TIBER-Data',
+      owner_commit_sha: manifest.artifact_inputs[0].owner_commit_sha,
+      artifact_type: 'weekly_schedule',
+      artifact_version: 'weekly-schedule-v1',
+      uri_or_path: 'tiber-data://schedule_and_opponent_context',
+      content_sha256: '9'.repeat(63) + 'a',
+      // Published well before the cutoff — this is what governs the class.
+      source_as_of: SCHEDULE_PUBLISHED,
+      availability_rule_id: 'published_at_or_before_cutoff',
+      cutoff_evidence: {
+        input_class: 'schedule_and_opponent_context',
+        availability_rule_id: 'published_at_or_before_cutoff',
+        source_timestamp_locator: 'artifact.published_at',
+        normalization_rule_id: manifest.artifact_inputs[0].cutoff_evidence.normalization_rule_id,
+        self_reported_status: 'eligible',
+        record_count_eligible: realRows.length,
+        // Every scheduled game is after the cutoff. That is what a schedule IS.
+        record_count_post_cutoff: realRows.length,
+        record_count_unresolved: 0,
+        record_level_verification: 'locally_verified',
+      },
+      limitations: [],
+    }];
+    // The manifest's own reconciliation coverage must name the new input too.
+    manifest.scoring_profile.source_reconciliation.source_input_sha256s =
+      [...new Set(manifest.artifact_inputs.map((i: any) => i.content_sha256))]
+        .sort() as string[];
+    return { manifest: manifest as WeeklyForecastPublicationManifest, rows: realRows, scheduleId };
+  };
+
+  /** Verification evidence for the schedule: max record time is a kickoff. */
+  const scheduleContext = (
+    manifest: WeeklyForecastPublicationManifest,
+    rows: readonly WeeklyPlayerRow[],
+    scheduleId: string,
+  ) => {
+    const base = censusContext(rows, manifest);
+    return {
+      ...base,
+      record_level_input_evidence: base.record_level_input_evidence!.map((e) =>
+        e.input_id === scheduleId
+          ? { ...e, max_record_effective_at: WEEK_ONE_KICKOFF, record_count_post_cutoff: rows.length }
+          : e),
+    };
+  };
+
+  it('admits a pre-cutoff schedule whose games fall after the cutoff', () => {
+    const { manifest, rows, scheduleId } = withSchedule();
+    const result = validateWeeklyPublication(
+      manifest, rows, scheduleContext(manifest, rows, scheduleId),
+    );
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it('still refuses a schedule PUBLISHED after the cutoff', () => {
+    // The exemption is about record times, not about the artifact. What the
+    // publisher could have known is still fixed by publication time.
+    const { manifest: base, rows, scheduleId } = withSchedule();
+    const manifest = clone(base) as any;
+    const schedule = manifest.artifact_inputs.find((i: any) => i.input_id === scheduleId);
+    schedule.source_as_of = '2026-09-11T00:00:00.000Z';
+    const context = scheduleContext(manifest, rows, scheduleId);
+    const result = validateWeeklyPublication(manifest, rows, {
+      ...context,
+      record_level_input_evidence: context.record_level_input_evidence!.map((e) =>
+        e.input_id === scheduleId ? { ...e, verified_source_as_of: schedule.source_as_of } : e),
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('input_post_cutoff');
+  });
+
+  it('still refuses post-cutoff records in a record-governed class', () => {
+    // The exemption is narrow on purpose. For `record.effective_at` classes the
+    // record's own time is exactly what makes it admissible, and for the
+    // prior-season classes a post-cutoff record is real leakage.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const rosterId = real.artifact_inputs.find(
+      (i) => i.input_class === 'roster_and_team_assignment_state',
+    )!.input_id;
+    const context = censusContext(realRows, real);
+    const result = validateWeeklyPublication(real, realRows, {
+      ...context,
+      record_level_input_evidence: context.record_level_input_evidence!.map((e) =>
+        e.input_id === rosterId ? { ...e, max_record_effective_at: WEEK_ONE_KICKOFF } : e),
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('input_verification_binding_mismatch');
+  });
+
+  it('still refuses post-cutoff records in a prior-season class', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const priorId = real.artifact_inputs.find(
+      (i) => i.input_class === 'prior_season_realized_outcomes',
+    )!.input_id;
+    const manifest = clone(real) as any;
+    manifest.artifact_inputs.find((i: any) => i.input_id === priorId)
+      .cutoff_evidence.record_count_post_cutoff = 3;
+    const context = censusContext(realRows, manifest);
+    const result = validateWeeklyPublication(manifest, realRows, {
+      ...context,
+      record_level_input_evidence: context.record_level_input_evidence!.map((e) =>
+        e.input_id === priorId ? { ...e, record_count_post_cutoff: 3 } : e),
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('input_post_cutoff');
+  });
+});
