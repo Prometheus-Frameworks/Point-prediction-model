@@ -2311,8 +2311,8 @@ export function validateWeeklyPublication(
     // unresolved/conflicting identity, then unresolved eligibility, then
     // ineligible, then unresolved position domain, then unsupported position,
     // then missing required inputs, then available. The census carries every
-    // dimension down to position, so all of those are decidable here; the last
-    // two rest on input membership and stay with the checks that own them.
+    // dimension down to position; level 6 is decided below from verified input
+    // membership, which leaves only `forecast_available` unforced.
     //
     // Applied to EVERY row, not only the two statuses the finding named — the
     // same ambiguity reaches `population_ineligible` and
@@ -2334,7 +2334,38 @@ export function validateWeeklyPublication(
       ) {
         return 'unsupported_position_domain';
       }
-      return null;
+
+      // Level 6. Decidable only when EVERY required input carries verified
+      // membership: an unverified required input could genuinely be the missing
+      // one, so absence of evidence must not decide a status.
+      const requiredIds = [...requiredInputIds];
+      if (requiredIds.length === 0) return null;
+      if (!requiredIds.every((id) => verifiedMembersByInputId.has(id))) return null;
+      const missingClasses = new Set(
+        inputs
+          .filter((i) =>
+            requiredInputIds.has(i.input_id) &&
+            !verifiedMembersByInputId.get(i.input_id)!.has(row.population_row_id))
+          .map((i) => i.input_class),
+      );
+      if (missingClasses.size === 0) return null;
+
+      // Two statuses live at this level, and which one is truthful depends on
+      // WHICH required inputs are missing. `no_prior_season_history` is the
+      // specific reason and is already contradicted unless BOTH prior-season
+      // classes lack the row, so it applies only when the missing set is exactly
+      // those two; anything else is the general reason. Choosing the subset rule
+      // this way keeps the two checks consistent — a narrower rule (any prior-
+      // season class missing) would have selected a status those checks refuse,
+      // recreating the dead end the previous round fixed.
+      const priorSeasonClasses: readonly string[] =
+        ['prior_season_realized_outcomes', 'prior_season_usage_and_role'];
+      const missingIsExactlyPriorSeason =
+        missingClasses.size === priorSeasonClasses.length &&
+        priorSeasonClasses.every((c) => missingClasses.has(c as WeeklyPreseasonInputClass));
+      return missingIsExactlyPriorSeason
+        ? 'no_prior_season_history'
+        : 'unavailable_missing_required_inputs';
     })();
     if (governedPrimaryStatus !== null && row.forecast_status !== governedPrimaryStatus) {
       fail('forecast_status_precedence_violated', `${at}.forecast_status`,

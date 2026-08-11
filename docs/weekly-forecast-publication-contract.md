@@ -298,9 +298,26 @@ The governed precedence (§4 validation rules) is therefore enforced:
 7. available
 
 The census carries every dimension down to position, so levels 1–5 are decided
-from verified evidence and a row must be filed under the highest-precedence
-condition that holds (`forecast_status_precedence_violated` otherwise). Levels 6
-and 7 rest on input membership and stay with the checks that own them.
+from verified evidence, and level 6 is decided from verified input membership. A
+row must be filed under the highest-precedence condition that holds
+(`forecast_status_precedence_violated` otherwise). Only `forecast_available` is
+left unforced, because it is what remains when nothing blocks.
+
+Level 6 holds two statuses, and which is truthful depends on *which* required
+inputs are missing:
+
+- the missing set is exactly the two prior-season classes →
+  `no_prior_season_history`;
+- anything else missing → `unavailable_missing_required_inputs`.
+
+That subset rule is not arbitrary. `no_prior_season_history` is already refused
+unless *both* prior-season classes lack the row, so a looser rule (any one of
+them missing) would select a status the reason checks refuse — leaving the row
+with no admissible status at all.
+
+Level 6 is decided only when **every** required input carries verified
+membership. An unverified required input could genuinely be the missing one, so
+absence of evidence never picks a status.
 
 This applies to every status, not only the two unresolved ones — a row the census
 blocks cannot be filed under an input-evidence status either.

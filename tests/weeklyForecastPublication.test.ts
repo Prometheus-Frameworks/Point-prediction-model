@@ -3057,3 +3057,104 @@ describe('adversarial: 40 — governed primary-status precedence', () => {
     expect(result.valid).toBe(true);
   });
 });
+
+describe('adversarial: 41 — precedence reaches the missing-required-input level', () => {
+  /**
+   * Levels 1–5 come from the census. Level 6 comes from verified input
+   * membership, and leaving it unforced left the last interchangeable pair:
+   * a row absent from both prior-season inputs satisfied
+   * `no_prior_season_history` AND `unavailable_missing_required_inputs`, so its
+   * `status_counts` bucket was still a publisher choice.
+   *
+   * Which of the two is truthful depends on WHICH required inputs are missing.
+   * `no_prior_season_history` is already contradicted unless both prior-season
+   * classes lack the row, so it is the primary status only when the missing set
+   * is exactly those two — a looser rule would select a status the existing
+   * checks refuse, recreating the dead end fixed at 05b58bc.
+   */
+  const priorSeasonRow = () =>
+    realisedManifest().rows.find((r) => r.forecast_status === 'no_prior_season_history')!;
+
+  /** Drop `rowId` from the verified membership of every input of `classes`. */
+  const withoutMembership = (
+    context: WeeklyVerificationContext,
+    manifest: WeeklyForecastPublicationManifest,
+    rowId: string,
+    classes: readonly string[],
+  ) => ({
+    ...context,
+    record_level_input_evidence: context.record_level_input_evidence!.map((e) => {
+      const input = manifest.artifact_inputs.find((i) => i.input_id === e.input_id)!;
+      if (!classes.includes(input.input_class)) return e;
+      const ids = e.eligible_population_row_ids.filter((id) => id !== rowId);
+      return { ...e, eligible_population_row_ids: ids, record_count_eligible: ids.length };
+    }),
+  });
+
+  it('refuses the general reason when the specific one is primary', () => {
+    // The reported ambiguity. Both statuses were admissible for this row.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const index = realRows.findIndex((r) => r.forecast_status === 'no_prior_season_history');
+    const attack = suppressRowAs(
+      real, realRows, index, 'unavailable_missing_required_inputs', 'missing_required',
+    );
+    const result = validateWeeklyPublication(
+      attack.manifest, attack.rows, censusContext(realRows, attack.manifest),
+    );
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('forecast_status_precedence_violated');
+  });
+
+  it('refuses the specific reason when a non-prior-season input is also missing', () => {
+    // Missing set is {both prior-season, roster}, so the general reason is
+    // primary — `no_prior_season_history` would understate why the row failed.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const target = priorSeasonRow();
+    const context = withoutMembership(
+      censusContext(realRows, real), real, target.population_row_id,
+      ['roster_and_team_assignment_state'],
+    );
+    const result = validateWeeklyPublication(real, realRows, context);
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('forecast_status_precedence_violated');
+  });
+
+  it('keeps the specific reason primary when only the prior-season pair is missing', () => {
+    // Positive control: the committed fixture is exactly this case.
+    const { manifest, rows } = realisedManifest();
+    const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it('stays silent when a required input carries no verified membership', () => {
+    // Absence of evidence must not decide a status: an unverified required
+    // input could genuinely be the missing one.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    const rosterId = real.artifact_inputs.find(
+      (i) => i.input_class === 'roster_and_team_assignment_state',
+    )!.input_id;
+    const result = validateWeeklyPublication(real, realRows, {
+      ...context,
+      record_level_input_evidence: context.record_level_input_evidence!.filter(
+        (e) => e.input_id !== rosterId,
+      ),
+    });
+    expect(codes(result)).not.toContain('forecast_status_precedence_violated');
+  });
+
+  it('refuses an available row the required inputs do not hold', () => {
+    // Level 6 outranks available, so this is now a precedence violation as well
+    // as a membership one.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const target = realRows.find((r) => r.forecast_status === 'forecast_available')!;
+    const context = withoutMembership(
+      censusContext(realRows, real), real, target.population_row_id,
+      ['roster_and_team_assignment_state'],
+    );
+    const result = validateWeeklyPublication(real, realRows, context);
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('forecast_status_precedence_violated');
+  });
+});
