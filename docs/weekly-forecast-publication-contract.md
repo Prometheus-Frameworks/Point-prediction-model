@@ -279,6 +279,13 @@ model. Only the zero case is asserted — with no eligible records there is
 nothing from which membership could be derived — and the membership list itself,
 not its length, is what the per-player checks rely on.
 
+Per-row identity evidence is bound the same way: its `content_sha256` to the
+governed census digest, its `record_id` to that row's census record, **and** its
+`uri_or_path` to the consumer-pinned census source path. Its `input_id` must be
+null — the census is referenced through `population_census`, never as an
+`artifact_inputs` entry, so any id there resolves to nothing this contract
+governs.
+
 **Every consumer-owned reference is bound whole, never by digest alone.** A
 partially bound reference is an unbound reference for every field left out:
 retaining a digest while relabelling the artifact type, version, path,
@@ -409,8 +416,8 @@ timestamp is a declared constant. Repeated runs produce byte-identical output.
 Current fixture digests:
 
 ```
-manifest_sha256    = 0cb6de658a835e0f6c39d7684ba783b17b080a888d5ff11c7e9af0700591561f
-player_rows_sha256 = 198aaf3e7c0b4f31d0c92d2b76a7e18d814afab8c655181e9281b1cd578821dc
+manifest_sha256    = f1d21b40b8ccd5071c4b59486773a5ed60922137171c8fca7f86733bc87cc1b2
+player_rows_sha256 = 68b219b30b21e618a2c3c06e04e6607395a1bf07f2da7afde0b3b8a0b95759c5
 ```
 
 ## Review summary — the shipped fixture

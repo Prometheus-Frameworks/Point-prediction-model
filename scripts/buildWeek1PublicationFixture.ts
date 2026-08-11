@@ -80,8 +80,8 @@ const EXAMPLE_ROWS: readonly WeeklyPlayerRow[] = [
       canonical_player_id: 'example-canonical-0001',
       identity_status: 'resolved',
       source_identity_ref: {
-        input_id: 'tiber-data-census-2026-w1',
-        uri_or_path: 'example://census/2026/week-01',
+        input_id: null,
+        uri_or_path: 'example://tiber-data/census/2026/week-01',
         content_sha256: PLACEHOLDER_SHA,
         record_id: 'census-2026-w1-000001',
       },
@@ -117,8 +117,8 @@ const EXAMPLE_ROWS: readonly WeeklyPlayerRow[] = [
       canonical_player_id: 'example-canonical-0002',
       identity_status: 'resolved',
       source_identity_ref: {
-        input_id: 'tiber-data-census-2026-w1',
-        uri_or_path: 'example://census/2026/week-01',
+        input_id: null,
+        uri_or_path: 'example://tiber-data/census/2026/week-01',
         content_sha256: PLACEHOLDER_SHA,
         record_id: 'census-2026-w1-000002',
       },
@@ -155,8 +155,8 @@ const EXAMPLE_ROWS: readonly WeeklyPlayerRow[] = [
       canonical_player_id: 'example-canonical-0003',
       identity_status: 'resolved',
       source_identity_ref: {
-        input_id: 'tiber-data-census-2026-w1',
-        uri_or_path: 'example://census/2026/week-01',
+        input_id: null,
+        uri_or_path: 'example://tiber-data/census/2026/week-01',
         content_sha256: PLACEHOLDER_SHA,
         record_id: 'census-2026-w1-000003',
       },
@@ -190,8 +190,8 @@ const EXAMPLE_ROWS: readonly WeeklyPlayerRow[] = [
       canonical_player_id: null,
       identity_status: 'unresolved',
       source_identity_ref: {
-        input_id: 'tiber-data-census-2026-w1',
-        uri_or_path: 'example://census/2026/week-01',
+        input_id: null,
+        uri_or_path: 'example://tiber-data/census/2026/week-01',
         content_sha256: PLACEHOLDER_SHA,
         record_id: 'census-2026-w1-000004',
       },

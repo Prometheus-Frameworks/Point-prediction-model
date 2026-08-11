@@ -2368,6 +2368,26 @@ export function validateWeeklyPublication(
         fail('identity_evidence_unbound', `${at}.identity.source_identity_ref.content_sha256`,
           'Row identity evidence must be bound to the verified governed census digest.');
       }
+      // The URI and the input id, bound for the same reason as the digest: a
+      // partially bound reference is an unbound reference for every field left
+      // out. The verification context already pins the governed census source
+      // path, so there is no reason to leave the row's citation of it free.
+      if (
+        context.expected_census_identity?.source_uri_or_path !== undefined &&
+        identityRef.uri_or_path !== context.expected_census_identity.source_uri_or_path
+      ) {
+        fail('identity_evidence_unbound', `${at}.identity.source_identity_ref.uri_or_path`,
+          `Row identity evidence cites "${identityRef.uri_or_path}" but the governed census ` +
+          `source is "${context.expected_census_identity.source_uri_or_path}".`);
+      }
+      if (identityRef.input_id !== null) {
+        // The census is referenced through `population_census`, never as an
+        // `artifact_inputs` entry, so any input id here resolves to nothing the
+        // contract governs — ungoverned metadata recorded as provenance.
+        fail('identity_evidence_unbound', `${at}.identity.source_identity_ref.input_id`,
+          'Row identity evidence is census-sourced; its input_id must be null rather than ' +
+          'naming an id no declared artifact input carries.');
+      }
       if (identityRef.record_id !== row.population_row_id) {
         fail('identity_evidence_unbound', `${at}.identity.source_identity_ref.record_id`,
           `Row identity evidence must reference this row's census record ` +

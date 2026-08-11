@@ -265,6 +265,7 @@ function realisedManifest(rowSet: readonly WeeklyPlayerRow[] = rows) {
   }));
   const realRows = clone(rowSet as WeeklyPlayerRow[]).map((row) => {
     row.identity.source_identity_ref.uri_or_path = 'tiber-data://census/2026/week-01';
+    row.identity.source_identity_ref.input_id = null;
     row.identity.source_identity_ref.content_sha256 = REAL_SHA;
     if (row.identity.canonical_player_id) {
       row.identity.canonical_player_id = row.identity.canonical_player_id.replace('example-canonical', 'canon');
@@ -2218,5 +2219,31 @@ describe('adversarial: 31 — one source record may cover many population rows',
     expect(codes(validateWeeklyPublication(
       noRecords, realRows, { ...context, record_level_input_evidence: evidence },
     ))).toContain('input_verification_binding_mismatch');
+  });
+});
+
+describe('adversarial: 32 — row identity evidence is bound whole', () => {
+  it('refuses a row citing a census path other than the pinned one', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const tampered = clone(realRows) as any[];
+    tampered[0].identity.source_identity_ref.uri_or_path = 'tiber-data://census/2026/week-01-subset';
+    expect(codes(validateWeeklyPublication(real, tampered as any, censusContext(realRows, real))))
+      .toContain('identity_evidence_unbound');
+  });
+
+  it('refuses a non-null input_id on census-sourced identity evidence', () => {
+    // The census is not an artifact input, so an id here names nothing the
+    // contract governs — ungoverned metadata recorded as provenance.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const tampered = clone(realRows) as any[];
+    tampered[0].identity.source_identity_ref.input_id = 'tiber-data-census-2026-w1';
+    expect(codes(validateWeeklyPublication(real, tampered as any, censusContext(realRows, real))))
+      .toContain('identity_evidence_unbound');
+  });
+
+  it('admits identity evidence that matches the pinned census in every field', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .not.toContain('identity_evidence_unbound');
   });
 });
