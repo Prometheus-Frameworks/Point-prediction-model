@@ -339,6 +339,15 @@ export interface WeeklyArtifactInput {
 
 export type WeeklyIdentityStatus = 'resolved' | 'unresolved' | 'conflicting';
 
+/**
+ * The governed eligibility decision the census records for a population row.
+ *
+ * Vocabulary is the forward-artifact contract's own (`status.eligibility`,
+ * §3.6 governed row shape): a decision produced by the census's pinned
+ * eligibility policy, never inferred from membership.
+ */
+export type WeeklyCensusEligibilityState = 'eligible' | 'ineligible' | 'unresolved';
+
 export interface WeeklyPlayerIdentity {
   canonical_player_id: string | null;
   identity_status: WeeklyIdentityStatus;
@@ -659,6 +668,7 @@ export type WeeklyValidationErrorCode =
   | 'census_provenance_ungoverned'
   | 'calibrated_uncertainty_unsupported'
   | 'identity_evidence_unbound'
+  | 'eligibility_evidence_unbound'
   | 'census_membership_mismatch'
   | 'identity_fuzzy_join_used'
   | 'identity_synthetic_namespace_used'
@@ -1352,6 +1362,24 @@ export interface WeeklyVerificationContext {
      * publisher-controlled fields to each other.
      */
     identity_states_by_row_id?: Readonly<Record<string, WeeklyIdentityStatus>>;
+    /**
+     * population_row_id → the eligibility decision the governed census records.
+     *
+     * The census is deliberately broad (§3.6: it "must include supported,
+     * unsupported, eligible, ineligible, and unresolved records"), so
+     * membership carries no eligibility information in either direction. That
+     * cuts both ways, and only one direction was covered: refusing
+     * `population_ineligible` on assertion alone stopped an ineligible LABEL
+     * from suppressing a player, but nothing stopped an ineligible PLAYER from
+     * being labelled `forecast_available` and ranked. Required-input membership
+     * and a genuine model execution can both exist for a retired or
+     * roster-inactive census row.
+     *
+     * This is the evidence that decides the question, so it also makes
+     * `population_ineligible` admission-capable again — bound to a verified
+     * decision rather than to an assertion.
+     */
+    eligibility_states_by_row_id?: Readonly<Record<string, WeeklyCensusEligibilityState>>;
     /**
      * The effective instant read from the exact census bytes.
      *
@@ -2219,9 +2247,29 @@ export function validateWeeklyPublication(
         `'${governedIdentityState}'.`);
     }
 
+    // Census-derived eligibility, checked for EVERY row, in the shared path for
+    // the same reason the identity-state check was moved here: a check that
+    // only runs on one branch binds only that branch.
+    const governedEligibility =
+      context.census?.eligibility_states_by_row_id?.[row.population_row_id];
+    if (context.census && governedEligibility === undefined) {
+      fail('eligibility_evidence_unbound', `${at}.forecast_status`,
+        `The verified census records no eligibility decision for "${row.population_row_id}".`);
+    }
+
     if (row.forecast_status === 'forecast_available') {
       const available = row as WeeklyAvailablePlayerRow;
       availableRows.push(available);
+      // An available forecast asserts the player belongs in the rankings. The
+      // census does not establish that -- it deliberately enumerates ineligible
+      // records too -- so without this the publisher chose the target
+      // population by assertion, and could rank a retired or roster-inactive
+      // player that every other check clears.
+      if (governedEligibility !== undefined && governedEligibility !== 'eligible') {
+        fail('eligibility_evidence_unbound', `${at}.forecast_status`,
+          `Row "${row.population_row_id}" is ranked as forecast_available while the ` +
+          `verified census records eligibility '${governedEligibility}'.`);
+      }
       if (!available.identity?.canonical_player_id || available.identity.identity_status !== 'resolved') {
         fail('available_row_identity_unresolved', `${at}.identity`,
           'An available forecast requires a resolved canonical identity.');
@@ -2346,40 +2394,49 @@ export function validateWeeklyPublication(
         );
       }
 
-      // Two statuses assert facts this contract carries NO evidence for, in
-      // either direction. They are therefore categorically inadmissible here,
-      // exactly as `calibrated` uncertainty is above and for the same reason:
-      // a status whose truth cannot be verified is not a reason, it is a free
-      // suppression channel. A publisher could otherwise convert every row to
-      // one of them, recompute the counts, digests, receipt and trusted
-      // binding, and admit a publication containing no rankings at all.
+      // `roster_state_unresolved` asserts a fact this contract carries NO
+      // evidence for, in either direction. It is therefore categorically
+      // inadmissible here, exactly as `calibrated` uncertainty is above and for
+      // the same reason: a status whose truth cannot be verified is not a
+      // reason, it is a free suppression channel. A publisher could otherwise
+      // convert every row to it, recompute the counts, digests, receipt and
+      // trusted binding, and admit a publication containing no rankings at all.
       //
-      //  - `population_ineligible` needs a governed eligibility decision. It
-      //    cannot be derived from census membership: §3.6 of the
-      //    forward-artifact contract specifies a deliberately broad census that
-      //    "must include supported, unsupported, eligible, ineligible, and
-      //    unresolved records so that whole domains cannot disappear before
-      //    reconciliation". Membership says nothing about eligibility either
-      //    way — which is why the previous revision's membership binding was
-      //    wrong, and why removing it without replacement was also wrong.
-      //
-      //  - `roster_state_unresolved` needs the verified `team_assignment_status`
-      //    of the roster record. Membership in the roster input establishes
-      //    only that a timely record exists; the governed row shape explicitly
-      //    admits `unknown` and `unavailable` assignment states, so a record
-      //    can be present while the state is genuinely unresolved.
-      //
-      // Admitting either requires carrying that evidence in
-      // `WeeklyVerificationContext` and binding to it. Until then the honest
-      // answer is refusal, not silent acceptance. Tracked as parked follow-up.
-      if (
-        row.forecast_status === 'population_ineligible' ||
-        row.forecast_status === 'roster_state_unresolved'
-      ) {
+      // It needs the verified `team_assignment_status` of the roster record.
+      // Membership in the roster input establishes only that a timely record
+      // exists; the governed row shape explicitly admits `unknown` and
+      // `unavailable` assignment states, so a record can be present while the
+      // state is genuinely unresolved. Admitting it requires carrying that
+      // evidence in `WeeklyVerificationContext` and binding to it. Until then
+      // the honest answer is refusal. Tracked as parked follow-up.
+      if (row.forecast_status === 'roster_state_unresolved') {
         fail('unavailability_reason_unverifiable', `${at}.forecast_status`,
           `Row "${row.population_row_id}" claims ${row.forecast_status}, but this contract ` +
           'carries no evidence that could confirm or refute it. Such a status cannot be ' +
           'admission-capable: it would let any row be suppressed on assertion alone.');
+      }
+
+      // `population_ineligible` was refused on the same ground until the census
+      // context began carrying the governed decision. It is now decided from
+      // that verified value, exactly like `unsupported_position_domain` below:
+      // truthful when the census says `ineligible`, a lie when it says
+      // `eligible`, and still unverifiable when the census itself is unresolved.
+      //
+      // Restoring it is not a loosening. Refusing it outright left an ineligible
+      // census row with no admissible status at all, so the only way to publish
+      // was to rank the player -- which is the hole this round closes. A status
+      // bound to verified evidence is strictly stronger than a status that
+      // cannot be declared and an available row that nothing checks.
+      if (row.forecast_status === 'population_ineligible') {
+        if (governedEligibility === undefined) {
+          fail('unavailability_reason_unverifiable', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims population_ineligible, but no verified ` +
+            'census eligibility decision was supplied that could confirm or refute it.');
+        } else if (governedEligibility !== 'ineligible') {
+          fail('unavailability_reason_contradicted', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims population_ineligible while the verified ` +
+            `census records eligibility '${governedEligibility}'.`);
+        }
       }
       if (row.forecast_status === 'unsupported_position_domain') {
         // Judged against the VERIFIED census position, never the row's own.

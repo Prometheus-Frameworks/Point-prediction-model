@@ -188,6 +188,15 @@ function censusContext(
       identity_states_by_row_id: Object.fromEntries(
         rowSet.map((r) => [r.population_row_id, r.identity!.identity_status]),
       ),
+      // Deliberately NOT derived from each row's declared status. Mirroring the
+      // declaration is how this harness masked two earlier gaps: a governed
+      // value computed from the thing it is supposed to govern agrees with
+      // every attack by construction. The committed fixture carries
+      // `population_ineligible: 0`, so "every row eligible" is the truthful
+      // baseline; the test that admits an ineligible row overrides it.
+      eligibility_states_by_row_id: Object.fromEntries(
+        rowSet.map((r) => [r.population_row_id, 'eligible' as const]),
+      ),
       // Read from the census bytes, not copied from the manifest. Tests that
       // attack the binding override this explicitly.
       effective_at: forManifest.population_census.effective_at,
@@ -1410,17 +1419,17 @@ describe('adversarial: 17 — an unavailability reason must lose to the verified
     expect(result).not.toContain('unavailability_reason_contradicted');
   });
 
-  it('refuses "population ineligible" as unverifiable, not on census membership', () => {
-    // Two wrong answers preceded this one. First the status was refused for
+  it('refuses "population ineligible" contradicted by the governed decision', () => {
+    // Three wrong answers preceded this one. First the status was refused for
     // any census member — but §3.6 specifies a deliberately BROAD census that
     // "must include supported, unsupported, eligible, ineligible, and
     // unresolved records", so membership implies nothing about eligibility and
     // every row is a member by construction. Then the check was removed
-    // outright, which made the status declarable on assertion alone.
+    // outright, which made the status declarable on assertion alone. Then it
+    // was refused categorically, which was safe against THIS attack but left an
+    // ineligible census row no admissible status at all.
     //
-    // Both directions are undecidable without a governed eligibility decision,
-    // so the status is not admission-capable — and the refusal must cite that,
-    // not census membership.
+    // The census now carries the governed decision, so the refusal cites it.
     const { manifest: real, rows: realRows } = realisedManifest();
     const attack = suppressRowAs(
       real, realRows, 0,
@@ -1430,8 +1439,50 @@ describe('adversarial: 17 — an unavailability reason must lose to the verified
     const result = codes(validateWeeklyPublication(
       attack.manifest, attack.rows, censusContext(realRows, real),
     ));
+    expect(result).toContain('unavailability_reason_contradicted');
+  });
+
+  it('refuses "population ineligible" as unverifiable when no decision is supplied', () => {
+    // The pre-evidence posture must survive for a context that supplies none:
+    // absent a governed decision the status is undecidable in both directions,
+    // so it stays inadmissible rather than falling open.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'population_ineligible',
+      'population_row_outside_bounded_scope',
+    );
+    const context = censusContext(realRows, real);
+    delete (context.census as any).eligibility_states_by_row_id;
+    const result = codes(validateWeeklyPublication(attack.manifest, attack.rows, context));
     expect(result).toContain('unavailability_reason_unverifiable');
+  });
+
+  it('admits "population ineligible" the governed decision confirms', () => {
+    // The other half: with the census recording `ineligible`, the status is
+    // truthful and must be admissible. Refusing it here is what forced an
+    // ineligible player to be ranked.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(
+      real, realRows, 0,
+      'population_ineligible',
+      'population_row_outside_bounded_scope',
+    );
+    const base = censusContext(realRows, real);
+    const context = {
+      ...base,
+      census: {
+        ...base.census!,
+        eligibility_states_by_row_id: {
+          ...base.census!.eligibility_states_by_row_id!,
+          [realRows[0].population_row_id]: 'ineligible' as const,
+        },
+      },
+    };
+    const result = codes(validateWeeklyPublication(attack.manifest, attack.rows, context));
     expect(result).not.toContain('unavailability_reason_contradicted');
+    expect(result).not.toContain('unavailability_reason_unverifiable');
+    expect(result).not.toContain('eligibility_evidence_unbound');
   });
 
   it.each(['population_ineligible', 'roster_state_unresolved'] as const)(
@@ -1452,7 +1503,14 @@ describe('adversarial: 17 — an unavailability reason must lose to the verified
         attack.manifest, attack.rows, censusContext(realRows, real),
       );
       expect(result.valid).toBe(false);
-      expect(codes(result)).toContain('unavailability_reason_unverifiable');
+      // `population_ineligible` is now decided from the governed census rather
+      // than refused outright, so the whole-population attack is caught as a
+      // contradiction of that decision instead. The escalation must still fail.
+      expect(codes(result)).toContain(
+        status === 'population_ineligible'
+          ? 'unavailability_reason_contradicted'
+          : 'unavailability_reason_unverifiable',
+      );
     },
   );
 
@@ -2367,6 +2425,27 @@ describe('the public context documentation matches the validator', () => {
     expect(flatten(wrapped)).toMatch(claim);
   });
 
+  it('documents the eligibility binding and no longer calls it inadmissible', () => {
+    // The contract document is normative for independent consumers, and it has
+    // drifted from the validator four times on this PR. `population_ineligible`
+    // moved from categorically refused to bound-and-admissible, so a consumer
+    // reading the old text would implement a validator that refuses valid
+    // publications and, worse, would not implement the availability gate at all.
+    const doc = readFileSync(
+      path.join(repoRoot, 'docs/weekly-forecast-publication-contract.md'),
+      'utf8',
+    );
+    expect(doc).toContain('eligibility_states_by_row_id');
+    expect(doc).toMatch(/`forecast_available` requires the governed decision to be exactly\s+`eligible`/);
+    // The old table listed exactly two categorically-inadmissible statuses.
+    expect(doc).not.toMatch(/Two statuses are \*\*categorically inadmissible\*\*/);
+    const inadmissible = doc.slice(
+      doc.indexOf('categorically inadmissible'),
+      doc.indexOf('### Eligibility binds availability'),
+    );
+    expect(inadmissible).not.toContain('population_ineligible');
+  });
+
   it('nowhere claims optional inputs are unpinned', () => {
     // Scoping the guard above to ONE comment block missed a second copy of the
     // same stale claim elsewhere in the file. The check is the whole file, and
@@ -2448,6 +2527,115 @@ describe('adversarial: 36 — census identity state binds available rows too', (
     // control — the same fixture-property trap this describe block exists to
     // avoid.
     const { manifest, rows } = availableOnly();
+    const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+});
+
+describe('adversarial: 37 — an ineligible player cannot be ranked', () => {
+  /**
+   * The inverse of every suppression attack on this PR. Those asked whether a
+   * publisher could REMOVE a governed player; this asks whether it could ADD
+   * one the governed census excludes.
+   *
+   * The census is deliberately broad (§3.6), so it enumerates ineligible
+   * records too. Required-input membership, a resolved identity, a supported
+   * position and a genuinely verified model execution can all exist for a
+   * retired or roster-inactive row — every check on the available branch
+   * cleared it, because none of them asked the eligibility question.
+   */
+  const ineligible = (rowId: string) => {
+    const { manifest, rows } = realisedManifest();
+    const base = censusContext(rows, manifest);
+    return {
+      manifest,
+      rows,
+      context: {
+        ...base,
+        census: {
+          ...base.census!,
+          eligibility_states_by_row_id: {
+            ...base.census!.eligibility_states_by_row_id!,
+            [rowId]: 'ineligible' as const,
+          },
+        },
+      },
+    };
+  };
+
+  const firstAvailable = () =>
+    realisedManifest().rows.find((r) => r.forecast_status === 'forecast_available')!;
+
+  it('refuses an available row the governed census records as ineligible', () => {
+    const target = firstAvailable();
+    const { manifest, rows, context } = ineligible(target.population_row_id);
+    const result = validateWeeklyPublication(manifest, rows, context);
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('eligibility_evidence_unbound');
+  });
+
+  it('refuses an available row the governed census leaves unresolved', () => {
+    // `unresolved` is not `eligible`. Treating it as admissible would let the
+    // weakest census state carry a full ranking.
+    const target = firstAvailable();
+    const { manifest, rows } = realisedManifest();
+    const base = censusContext(rows, manifest);
+    const result = validateWeeklyPublication(manifest, rows, {
+      ...base,
+      census: {
+        ...base.census!,
+        eligibility_states_by_row_id: {
+          ...base.census!.eligibility_states_by_row_id!,
+          [target.population_row_id]: 'unresolved' as const,
+        },
+      },
+    });
+    expect(codes(result)).toContain('eligibility_evidence_unbound');
+  });
+
+  it('refuses a publication whose census supplies no eligibility decisions', () => {
+    // Fail-closed on absence, in the shared per-row path. Placing this on the
+    // available branch alone would repeat the identity-state placement bug.
+    const { manifest, rows } = realisedManifest();
+    const context = censusContext(rows, manifest);
+    delete (context.census as any).eligibility_states_by_row_id;
+    expect(codes(validateWeeklyPublication(manifest, rows, context)))
+      .toContain('eligibility_evidence_unbound');
+  });
+
+  it('refuses when the census omits the decision for one row only', () => {
+    const target = firstAvailable();
+    const { manifest, rows } = realisedManifest();
+    const base = censusContext(rows, manifest);
+    const states = { ...base.census!.eligibility_states_by_row_id! };
+    delete (states as any)[target.population_row_id];
+    expect(codes(validateWeeklyPublication(manifest, rows, {
+      ...base, census: { ...base.census!, eligibility_states_by_row_id: states },
+    }))).toContain('eligibility_evidence_unbound');
+  });
+
+  it('refuses the whole-population version of the same attack', () => {
+    // Escalation check, matching the suppression escalations: relabelling one
+    // row is a defect, relabelling every row is a fabricated ranking set.
+    const { manifest, rows } = realisedManifest();
+    const base = censusContext(rows, manifest);
+    const result = validateWeeklyPublication(manifest, rows, {
+      ...base,
+      census: {
+        ...base.census!,
+        eligibility_states_by_row_id: Object.fromEntries(
+          rows.map((r) => [r.population_row_id, 'ineligible' as const]),
+        ),
+      },
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('eligibility_evidence_unbound');
+  });
+
+  it('admits the unmodified publication, whose census records every row eligible', () => {
+    // Positive control asserting FULL validity, not the absence of one code.
+    const { manifest, rows } = realisedManifest();
     const result = validateWeeklyPublication(manifest, rows, censusContext(rows, manifest));
     expect(result.errors).toEqual([]);
     expect(result.valid).toBe(true);

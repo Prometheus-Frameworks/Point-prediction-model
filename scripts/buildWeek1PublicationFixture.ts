@@ -493,6 +493,9 @@ function exampleCensusContext(
       identity_states_by_row_id: Object.fromEntries(
         EXAMPLE_ROWS.map((row) => [row.population_row_id, row.identity!.identity_status]),
       ),
+      eligibility_states_by_row_id: Object.fromEntries(
+        EXAMPLE_ROWS.map((row) => [row.population_row_id, 'eligible' as const]),
+      ),
       effective_at: forManifest.population_census.effective_at,
     },
   };

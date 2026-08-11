@@ -256,18 +256,51 @@ So each reason is bound to whatever independently verifies it:
 | `unavailable_missing_required_inputs` | every required input carries verified membership **and** all of them hold an eligible record for the row |
 | `no_prior_season_history` | a verified `prior_season_realized_outcomes` or `prior_season_usage_and_role` input holds an eligible record for the row |
 | `unsupported_position_domain` | the **verified census** assigns the row a supported offensive position |
+| `population_ineligible` | the **verified census** records the row's eligibility as anything other than `ineligible`; and refused as unverifiable when no governed decision is supplied at all |
 
-Two statuses are **categorically inadmissible**, for the same reason
+One status remains **categorically inadmissible**, for the same reason
 `calibrated` uncertainty is: this contract carries no evidence that could
-confirm or refute them in either direction, and a status whose truth cannot be
+confirm or refute it in either direction, and a status whose truth cannot be
 verified is not a reason — it is a free suppression channel. A publisher could
-otherwise mark every row with one of them, recompute the counts, digests,
-receipt and trusted binding, and admit a publication containing no rankings.
+otherwise mark every row with it, recompute the counts, digests, receipt and
+trusted binding, and admit a publication containing no rankings.
 
 | Status | Refused because | Admitting it would require |
 | --- | --- | --- |
-| `population_ineligible` | census membership implies nothing about eligibility — the census is deliberately broad and *includes* ineligible records — and nothing else in the document speaks to it | a governed eligibility decision carried in the verification context |
 | `roster_state_unresolved` | membership in the roster input establishes only that a *timely* record exists; the governed row shape explicitly admits `team_assignment_status: unknown \| unavailable`, so a record can be present while the state is genuinely unresolved | the verified `team_assignment_status` of that record |
+
+### Eligibility binds availability, not only unavailability
+
+Every rule above answers one question: may a governed player be *removed* from
+the rankings? Eligibility is the first rule that also answers the inverse — may
+a player the census *excludes* be added?
+
+The census is deliberately broad (§3.6: it "must include supported,
+unsupported, eligible, ineligible, and unresolved records"), so membership
+carries no eligibility information in either direction. Required-input
+membership, a resolved identity, a supported position and a verified model
+execution can all exist for a retired or roster-inactive census row. Nothing on
+the available branch asked the eligibility question, so ranking that row passed
+every check.
+
+The verification context therefore carries `eligibility_states_by_row_id`
+(`eligible | ineligible | unresolved`, the forward-artifact contract's own
+`status.eligibility` vocabulary, produced by the census's pinned eligibility
+policy). It is bound on **every** row, available or not:
+
+- a decision must be present for each row, or admission is refused
+  (`eligibility_evidence_unbound`);
+- `forecast_available` requires the governed decision to be exactly `eligible`
+  — `unresolved` is not `eligible`, and treating it as such would let the
+  weakest census state carry a full ranking;
+- `population_ineligible` requires it to be exactly `ineligible`.
+
+The last point is why that status is admissible again rather than categorically
+refused. Refusing it outright was safe against a false ineligibility claim, but
+it left a genuinely ineligible census row with **no admissible status at all** —
+so the only way to publish was to rank the player. A status bound to verified
+evidence is strictly stronger than a status that cannot be declared beside an
+available row that nothing checks.
 
 **Record counts and membership counts are never compared.** They are different
 units with no derivable relation: `prior_season_realized_outcomes` is weekly, so
@@ -379,7 +412,12 @@ extra rows are all rejected.
 
 Rows that cannot receive a forecast stay **visible and unranked** with typed
 reasons — `no_prior_season_history`, `identity_unresolved`,
-`roster_state_unresolved`, and so on. Nothing is silently dropped.
+`unsupported_position_domain`, `population_ineligible`, and so on. Nothing is
+silently dropped.
+
+(`roster_state_unresolved` was listed here until it became categorically
+inadmissible; no admitted publication can carry it, so citing it as something a
+consumer will see was wrong.)
 
 Identity resolution is exact. `fuzzy_join_used` and `synthetic_namespace_used`
 are literal `false` in the type and enforced by the validator.
