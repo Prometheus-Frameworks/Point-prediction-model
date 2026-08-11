@@ -1238,7 +1238,19 @@ export interface WeeklyVerificationContext {
     implementation_commit_evidence_sha256: string;
     configuration_sha256: string;
     feature_configuration_sha256: string;
-    fitted_model_sha256: string;
+    /**
+     * The COMPLETE fitted-model reference the run used.
+     *
+     * Binding only the digest left `artifact_type`, `artifact_version` and
+     * `uri_or_path` free, so a regenerated publication could record
+     * fitted-model provenance the execution never verified.
+     */
+    fitted_model_ref: {
+      artifact_type: string;
+      artifact_version: string;
+      uri_or_path: string;
+      content_sha256: string;
+    };
     /**
      * input_id → the content digest the run consumed under that id.
      *
@@ -1624,7 +1636,8 @@ export function validateWeeklyPublication(
       run.implementation_commit_evidence_sha256 !== model?.implementation_commit_evidence_sha256 ||
       run.configuration_sha256 !== model?.configuration_sha256 ||
       run.feature_configuration_sha256 !== model?.feature_configuration_sha256 ||
-      run.fitted_model_sha256 !== model?.fitted_model_ref?.content_sha256
+      canonicalForwardJsonSha256(run.fitted_model_ref ?? null) !==
+        canonicalForwardJsonSha256(model?.fitted_model_ref ?? null)
     ) {
       fail('model_execution_unverified', 'verification_context.verified_model_execution',
         'The verified execution does not report success for the exact model identity, ' +

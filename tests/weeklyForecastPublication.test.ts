@@ -142,7 +142,7 @@ function censusContext(
       implementation_commit_evidence_sha256: forManifest.model.implementation_commit_evidence_sha256,
       configuration_sha256: forManifest.model.configuration_sha256,
       feature_configuration_sha256: forManifest.model.feature_configuration_sha256,
-      fitted_model_sha256: forManifest.model.fitted_model_ref?.content_sha256 ?? '',
+      fitted_model_ref: forManifest.model.fitted_model_ref!,
       input_digests_by_input_id: Object.fromEntries(
         forManifest.artifact_inputs.map((i) => [i.input_id, i.content_sha256]),
       ),
@@ -1943,7 +1943,7 @@ describe('adversarial: 25 — the model execution is verified, not declared', ()
     const context = censusContext(realRows, real);
     for (const field of [
       'implementation_commit_sha', 'configuration_sha256',
-      'feature_configuration_sha256', 'fitted_model_sha256',
+      'feature_configuration_sha256',
     ] as const) {
       const run = { ...context.verified_model_execution!, [field]: 'f'.repeat(63) + 'a' };
       expect(codes(validateWeeklyPublication(real, realRows, {
@@ -2047,5 +2047,28 @@ describe('adversarial: 27 — the execution binds the full declared model identi
     relabelled.digests.player_rows_sha256 = canonicalForwardJsonSha256(realRows);
     expect(codes(validateWeeklyPublication(relabelled, realRows, censusContext(realRows, real))))
       .toContain('model_execution_unverified');
+  });
+});
+
+describe('adversarial: 28 — the fitted-model reference is bound whole', () => {
+  it.each(['artifact_type', 'artifact_version', 'uri_or_path', 'content_sha256'] as const)(
+    'refuses when the publication changes fitted_model_ref.%s',
+    (field) => {
+      // Binding only the digest left the surrounding metadata free, so a
+      // regenerated publication could record fitted-model provenance the run
+      // never verified.
+      const { manifest: real, rows: realRows } = realisedManifest();
+      const relabelled = clone(real) as any;
+      relabelled.model.fitted_model_ref[field] =
+        field === 'content_sha256' ? 'a'.repeat(63) + 'f' : `substituted-${field}`;
+      expect(codes(validateWeeklyPublication(relabelled, realRows, censusContext(realRows, real))))
+        .toContain('model_execution_unverified');
+    },
+  );
+
+  it('still admits the reference the execution actually verified', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .not.toContain('model_execution_unverified');
   });
 });

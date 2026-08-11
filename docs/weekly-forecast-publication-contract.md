@@ -304,7 +304,7 @@ correctly pinned authority receipt could admit arbitrary projections labelled
 `model-inference`. A real publication must supply `verified_model_execution`
 reporting success for the **full** declared model identity — `model_id`,
 `model_version`, implementation commit and its evidence digest, configuration,
-features and fitted artifact — consuming exactly the admitted inputs, and
+features and the **complete** fitted-model reference (type, version, path and digest, not the digest alone) — consuming exactly the admitted inputs, and
 producing exactly the published rows digest.
 
 Inputs are compared as an `input_id` → digest **map**, never as a deduplicated
