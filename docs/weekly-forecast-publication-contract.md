@@ -286,11 +286,6 @@ And for `unavailable_missing_required_inputs` the check abstains unless *every*
 required input is verified, because an unverified one could genuinely be the
 missing one.
 
-The `unsupported_position_domain` row is the weakest of the six: position is
-publisher-declared and not census-bound, so the check catches the
-self-contradiction rather than a false position. Binding position to the
-governed census is an open follow-up.
-
 ## Census reconciliation
 
 Every census row maps to exactly one output row **or** a typed unavailable

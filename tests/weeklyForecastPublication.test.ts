@@ -655,6 +655,16 @@ describe('the published contract matches the validator', () => {
     expect(contractDoc).toContain(WEEKLY_WEEK1_PREKICKOFF_DEADLINE_UTC);
   });
 
+  it('does not contradict itself about how position is established', () => {
+    // The document gained a census-binding description while an older paragraph
+    // still said position was publisher-declared and binding it was open
+    // follow-up. A contract document that asserts both leaves a reader unable
+    // to tell whether the status is governed or self-checked.
+    expect(contractDoc).toContain('positions_by_row_id');
+    expect(contractDoc).not.toMatch(/position is\s+publisher-declared/);
+    expect(contractDoc).not.toMatch(/Binding position to the\s+governed census is an open follow-up/);
+  });
+
   it('documents every unavailability reason the validator binds', () => {
     // An independent implementation reading only the contract must not be able
     // to recreate the selective-suppression path. Each bound reason has to be
