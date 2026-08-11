@@ -153,6 +153,8 @@ function censusContext(
     },
     verified_scoring_reconciliation: {
       status: 'passed' as const,
+      validator_id: forManifest.scoring_profile.source_reconciliation!.validator_id,
+      validator_version: forManifest.scoring_profile.source_reconciliation!.validator_version,
       evidence_ref: forManifest.scoring_profile.source_reconciliation!.evidence_ref,
       scoring_profile_sha256: forManifest.scoring_profile.profile_sha256,
       // Read from the verified artifact, not copied from the manifest.
@@ -2246,4 +2248,41 @@ describe('adversarial: 32 — row identity evidence is bound whole', () => {
     expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
       .not.toContain('identity_evidence_unbound');
   });
+});
+
+describe('adversarial: 33 — identity failure reasons match the identity state exactly', () => {
+  it.each([
+    ['identity_unresolved', 'conflicting'],
+    ['identity_conflicting', 'unresolved'],
+  ] as const)('refuses %s paired with identity_status %s', (forecastStatus, identityStatus) => {
+    // Rejecting only the `resolved` case left these crossed pairings
+    // admissible. They are distinct states that feed the published coverage and
+    // status counts, so admission could record a contradictory failure reason.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const attack = suppressRowAs(real, realRows, 0, forecastStatus, `${forecastStatus}_reason`);
+    (attack.rows[0] as any).identity.identity_status = identityStatus;
+    (attack.rows[0] as any).identity.canonical_player_id = null;
+    attack.manifest.digests.player_rows_sha256 = canonicalForwardJsonSha256(attack.rows);
+    (attack.manifest.outputs[0] as any).content_sha256 = attack.manifest.digests.player_rows_sha256;
+
+    const context = censusContext(realRows, real);
+    const ids = { ...context.census!.canonical_player_ids_by_row_id!, [attack.rows[0].population_row_id]: null };
+    expect(codes(validateWeeklyPublication(attack.manifest, attack.rows, {
+      ...context,
+      census: { ...context.census!, canonical_player_ids_by_row_id: ids },
+    }))).toContain('identity_evidence_unbound');
+  });
+});
+
+describe('adversarial: 34 — reconciliation validator identity is verified', () => {
+  it.each(['validator_id', 'validator_version'] as const)(
+    'refuses a manifest that relabels %s',
+    (field) => {
+      const { manifest: real, rows: realRows } = realisedManifest();
+      const relabelled = clone(real) as any;
+      relabelled.scoring_profile.source_reconciliation[field] = `substituted-${field}`;
+      expect(codes(validateWeeklyPublication(relabelled, realRows, censusContext(realRows, real))))
+        .toContain('scoring_reconciliation_invalid');
+    },
+  );
 });

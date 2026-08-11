@@ -1267,6 +1267,9 @@ export interface WeeklyVerificationContext {
   };
   verified_scoring_reconciliation?: {
     status: 'passed' | 'failed' | 'unavailable';
+    /** The validator that actually produced the verified result. */
+    validator_id: string;
+    validator_version: string;
     /** The COMPLETE evidence reference, not its digest alone. */
     evidence_ref: {
       repository: string;
@@ -1591,6 +1594,10 @@ export function validateWeeklyPublication(
         'certify its own.');
     } else if (
       verifiedReconciliation.status !== 'passed' ||
+      // Validator identity too: attributing a verified result to a validator
+      // and version that never produced it is provenance nothing checked.
+      verifiedReconciliation.validator_id !== sourceReconciliation?.validator_id ||
+      verifiedReconciliation.validator_version !== sourceReconciliation?.validator_version ||
       canonicalForwardJsonSha256(verifiedReconciliation.evidence_ref ?? null) !==
         canonicalForwardJsonSha256(reconciliationEvidence ?? null) ||
       verifiedReconciliation.scoring_profile_sha256 !== TIBER_GENERIC_FULL_PPR_V1_SHA256
@@ -2240,10 +2247,23 @@ export function validateWeeklyPublication(
           `census resolves it to "${verifiedCanonical}". An unavailability reason must be ` +
           'consistent with the verified identity state.');
       }
-      if (claimsIdentityProblem && row.identity?.identity_status === 'resolved') {
-        fail('identity_evidence_unbound', `${at}.forecast_status`,
-          `Row "${row.population_row_id}" declares identity_status 'resolved' while claiming ` +
-          `${row.forecast_status}; those cannot both be true.`);
+      // Exact correspondence, not merely "not resolved". Rejecting only the
+      // `resolved` case left `identity_unresolved` paired with
+      // identity_status `conflicting` (and the reverse) admissible, and those
+      // are distinct states that feed the published coverage and status counts
+      // — so admission could record a contradictory identity failure reason.
+      const expectedIdentityStatusFor: Record<string, string> = {
+        identity_unresolved: 'unresolved',
+        identity_conflicting: 'conflicting',
+      };
+      if (claimsIdentityProblem) {
+        const expectedStatus = expectedIdentityStatusFor[row.forecast_status];
+        if (row.identity?.identity_status !== expectedStatus) {
+          fail('identity_evidence_unbound', `${at}.forecast_status`,
+            `Row "${row.population_row_id}" claims ${row.forecast_status}, which requires ` +
+            `identity_status '${expectedStatus}', but declares ` +
+            `'${row.identity?.identity_status}'.`);
+        }
       }
 
       // The same selective-suppression vector, one status further along.
