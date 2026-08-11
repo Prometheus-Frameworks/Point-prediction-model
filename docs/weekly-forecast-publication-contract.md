@@ -252,7 +252,7 @@ So each reason is bound to whatever independently verifies it:
 
 | Reason | Rejected when |
 | --- | --- |
-| `identity_unresolved`, `identity_conflicting` | the verified census resolves the row to a canonical id, or the row's own `identity_status` is not the exact matching state (`unresolved` / `conflicting` respectively) — the crossed pairings are distinct states feeding published coverage counts. The state itself is census-derived (`identity_states_by_row_id`), since `unresolved` and `conflicting` both map to a null canonical id and would otherwise be interchangeable |
+| `identity_unresolved`, `identity_conflicting` | the verified census resolves the row to a canonical id, or the row's own `identity_status` is not the exact matching state (`unresolved` / `conflicting` respectively) — the crossed pairings are distinct states feeding published coverage counts. The state itself is census-derived (`identity_states_by_row_id`) and bound on EVERY row, available or not, since `unresolved` and `conflicting` both map to a null canonical id and would otherwise be interchangeable |
 | `unavailable_missing_required_inputs` | every required input carries verified membership **and** all of them hold an eligible record for the row |
 | `no_prior_season_history` | a verified `prior_season_realized_outcomes` or `prior_season_usage_and_role` input holds an eligible record for the row |
 | `unsupported_position_domain` | the **verified census** assigns the row a supported offensive position |

@@ -2342,3 +2342,56 @@ describe('the public context documentation matches the validator', () => {
     expect(block).not.toMatch(/for each REQUIRED input class/);
   });
 });
+
+describe('adversarial: 36 — census identity state binds available rows too', () => {
+  /** Rows restricted to the available ones, so no unavailable row can satisfy the check. */
+  const availableOnly = () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const rowsOnly = realRows.filter((r) => r.forecast_status === 'forecast_available');
+    expect(rowsOnly.length).toBeGreaterThan(0);
+    const next = clone(real) as any;
+    next.population_census.row_count = rowsOnly.length;
+    next.population_reconciliation.output_row_count = rowsOnly.length;
+    next.identity_coverage = {
+      census_row_count: rowsOnly.length,
+      resolved_count: rowsOnly.length,
+      unresolved_count: 0,
+      conflicting_count: 0,
+      coverage_rate: 1,
+      unresolved_population_row_ids: [],
+      conflicting_population_row_ids: [],
+    };
+    next.status_counts = { ...next.status_counts };
+    for (const key of Object.keys(next.status_counts)) next.status_counts[key] = 0;
+    next.status_counts.forecast_available = rowsOnly.length;
+    next.digests.player_rows_sha256 = canonicalForwardJsonSha256(rowsOnly);
+    next.outputs[0].content_sha256 = next.digests.player_rows_sha256;
+    return { manifest: next as WeeklyForecastPublicationManifest, rows: rowsOnly };
+  };
+
+  it('refuses when the census omits the state for an available row', () => {
+    // The previous placement put this check inside the unavailable branch, so
+    // this publication — which has no unavailable rows at all — validated with
+    // no identity-state evidence whatsoever.
+    const { manifest, rows } = availableOnly();
+    const context = censusContext(rows, manifest);
+    delete (context.census as any).identity_states_by_row_id;
+    expect(codes(validateWeeklyPublication(manifest, rows, context)))
+      .toContain('identity_evidence_unbound');
+  });
+
+  it('refuses an available row whose declared state contradicts the census', () => {
+    const { manifest, rows } = availableOnly();
+    const context = censusContext(rows, manifest);
+    const states = { ...context.census!.identity_states_by_row_id!, [rows[0].population_row_id]: 'conflicting' as const };
+    expect(codes(validateWeeklyPublication(manifest, rows, {
+      ...context, census: { ...context.census!, identity_states_by_row_id: states },
+    }))).toContain('identity_evidence_unbound');
+  });
+
+  it('admits an available-only publication whose states match', () => {
+    const { manifest, rows } = availableOnly();
+    expect(codes(validateWeeklyPublication(manifest, rows, censusContext(rows, manifest))))
+      .not.toContain('identity_evidence_unbound');
+  });
+});

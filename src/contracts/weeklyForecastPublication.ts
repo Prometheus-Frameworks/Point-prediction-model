@@ -2194,6 +2194,25 @@ export function validateWeeklyPublication(
       }
     }
 
+    // Census-derived identity state, checked for EVERY row.
+    //
+    // This lived inside the unavailable branch, so available rows were never
+    // bound and a context could omit state evidence for all of them and still
+    // validate. The absence test passed only because the fixture happens to
+    // contain unavailable rows — placement, not coverage, was doing the work.
+    const governedIdentityState =
+      context.census?.identity_states_by_row_id?.[row.population_row_id];
+    if (context.census && governedIdentityState === undefined) {
+      fail('identity_evidence_unbound', `${at}.identity.identity_status`,
+        `The verified census records no identity state for "${row.population_row_id}".`);
+    } else if (governedIdentityState !== undefined &&
+               row.identity?.identity_status !== governedIdentityState) {
+      fail('identity_evidence_unbound', `${at}.identity.identity_status`,
+        `Row "${row.population_row_id}" declares identity_status ` +
+        `'${row.identity?.identity_status}' while the verified census records ` +
+        `'${governedIdentityState}'.`);
+    }
+
     if (row.forecast_status === 'forecast_available') {
       const available = row as WeeklyAvailablePlayerRow;
       availableRows.push(available);
@@ -2270,21 +2289,6 @@ export function validateWeeklyPublication(
         identity_unresolved: 'unresolved',
         identity_conflicting: 'conflicting',
       };
-      // The census-derived state first: without it the correspondence below
-      // compares two publisher-controlled fields to each other, which a
-      // relabelling satisfies trivially.
-      const governedIdentityState =
-        context.census?.identity_states_by_row_id?.[row.population_row_id];
-      if (context.census && governedIdentityState === undefined) {
-        fail('identity_evidence_unbound', `${at}.identity.identity_status`,
-          `The verified census records no identity state for "${row.population_row_id}".`);
-      } else if (governedIdentityState !== undefined &&
-                 row.identity?.identity_status !== governedIdentityState) {
-        fail('identity_evidence_unbound', `${at}.identity.identity_status`,
-          `Row "${row.population_row_id}" declares identity_status ` +
-          `'${row.identity?.identity_status}' while the verified census records ` +
-          `'${governedIdentityState}'.`);
-      }
       if (claimsIdentityProblem) {
         const expectedStatus = expectedIdentityStatusFor[row.forecast_status];
         if (row.identity?.identity_status !== expectedStatus) {
