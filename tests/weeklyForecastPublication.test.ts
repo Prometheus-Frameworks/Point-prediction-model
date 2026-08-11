@@ -146,6 +146,9 @@ function censusContext(
       positions_by_row_id: Object.fromEntries(
         rowSet.map((r) => [r.population_row_id, r.identity?.position ?? null]),
       ),
+      // Read from the census bytes, not copied from the manifest. Tests that
+      // attack the binding override this explicitly.
+      effective_at: forManifest.population_census.effective_at,
     },
     record_level_input_evidence: recordLevelEvidence,
     admission_authority: receipt ? trustedBindingFor(receipt) : undefined,
@@ -1667,5 +1670,58 @@ describe('adversarial: 19 — position is governed census data, not a publisher 
     delete (context.census as any).positions_by_row_id;
     expect(codes(validateWeeklyPublication(real, realRows, context)))
       .toContain('identity_evidence_unbound');
+  });
+});
+
+describe('adversarial: 20 — the census effective instant is verified, not asserted', () => {
+  // The reported bypass: the cutoff comparison read the manifest's own copy of
+  // `population_census.effective_at`. A publisher could pin a census produced
+  // AFTER the cutoff and backdate that copy, admitting post-cutoff membership,
+  // identities and — since positions became census-derived — positions too.
+
+  const afterCutoff = (real: WeeklyForecastPublicationManifest) =>
+    new Date(new Date(real.forecast_cutoff).getTime() + 86_400_000).toISOString();
+
+  it('refuses a backdated manifest copy when the verified census is post-cutoff', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    // The manifest keeps its compliant, backdated value; the verified bytes say
+    // the census was produced a day after the cutoff.
+    const result = validateWeeklyPublication(real, realRows, {
+      ...context,
+      census: { ...context.census!, effective_at: afterCutoff(real) },
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('census_effective_at_invalid');
+  });
+
+  it('refuses when the verified census carries no effective instant', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const context = censusContext(realRows, real);
+    delete (context.census as any).effective_at;
+    expect(codes(validateWeeklyPublication(real, realRows, context)))
+      .toContain('census_effective_at_invalid');
+  });
+
+  it('still refuses a post-cutoff census when manifest and evidence agree', () => {
+    // The honest case must keep failing on the cutoff ground, not silently
+    // pass because the two now match.
+    const { manifest: real, rows: realRows } = realisedManifest();
+    const late = afterCutoff(real);
+    const tampered = clone(real) as any;
+    tampered.population_census.effective_at = late;
+    const context = censusContext(realRows, real);
+    const result = validateWeeklyPublication(tampered, realRows, {
+      ...context,
+      census: { ...context.census!, effective_at: late },
+    });
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('census_post_cutoff');
+  });
+
+  it('admits a census whose verified instant matches and precedes the cutoff', () => {
+    const { manifest: real, rows: realRows } = realisedManifest();
+    expect(codes(validateWeeklyPublication(real, realRows, censusContext(realRows, real))))
+      .not.toContain('census_effective_at_invalid');
   });
 });

@@ -269,6 +269,12 @@ receipt and trusted binding, and admit a publication containing no rankings.
 | `population_ineligible` | census membership implies nothing about eligibility — the census is deliberately broad and *includes* ineligible records — and nothing else in the document speaks to it | a governed eligibility decision carried in the verification context |
 | `roster_state_unresolved` | membership in the roster input establishes only that a *timely* record exists; the governed row shape explicitly admits `team_assignment_status: unknown \| unavailable`, so a record can be present while the state is genuinely unresolved | the verified `team_assignment_status` of that record |
 
+The verification context also carries the census's own `effective_at`, read from
+the exact bytes. The manifest duplicates that value and the duplicate must match;
+the cutoff comparison uses the **verified** instant. Without that binding a
+census produced after the cutoff could be pinned while the manifest backdated
+its copy — admitting post-cutoff membership, identities and positions.
+
 `unsupported_position_domain` is judged against the census, never the row's own
 declaration. Position is governed census data (`"<cutoff-bound position |
 unknown>"`), and the verification context carries it as `positions_by_row_id`;

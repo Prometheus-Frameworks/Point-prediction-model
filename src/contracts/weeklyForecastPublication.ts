@@ -1227,6 +1227,15 @@ export interface WeeklyVerificationContext {
      * a resolved row be relabelled `K` and suppressed on assertion alone.
      */
     positions_by_row_id?: Readonly<Record<string, string | null>>;
+    /**
+     * The effective instant read from the exact census bytes.
+     *
+     * The manifest duplicates this value, and the duplicate is what the cutoff
+     * comparison used to read — so a census produced after the cutoff could be
+     * pinned while the manifest backdated its copy, admitting post-cutoff
+     * membership, identities and positions.
+     */
+    effective_at?: string;
   };
   /**
    * Verification results produced from the exact source bytes. An input id by
@@ -1676,9 +1685,22 @@ export function validateWeeklyPublication(
   if (!isCanonicalUtc(manifest.population_census?.effective_at)) {
     fail('census_effective_at_invalid', 'population_census.effective_at',
       'Census effective_at must be a canonical UTC instant.');
+  } else if (context.census && !isCanonicalUtc(context.census.effective_at)) {
+    // The manifest's copy is a publisher assertion. Without the instant read
+    // from the verified bytes there is nothing to check it against, and the
+    // cutoff comparison degrades to self-certification.
+    fail('census_effective_at_invalid', 'verification_context.census.effective_at',
+      'The verified census must carry the effective instant read from its own bytes.');
+  } else if (context.census && context.census.effective_at !== manifest.population_census.effective_at) {
+    fail('census_effective_at_invalid', 'population_census.effective_at',
+      `Manifest census effective_at "${manifest.population_census.effective_at}" does not match ` +
+      `the verified census "${context.census.effective_at}".`);
   } else if (
     cutoffMs !== null &&
-    new Date(manifest.population_census.effective_at).getTime() > cutoffMs
+    // Compare the VERIFIED instant where one exists; the manifest copy is only
+    // the fallback for the structurally-reviewable example, which is
+    // categorically non-admissible on other grounds anyway.
+    new Date(context.census?.effective_at ?? manifest.population_census.effective_at).getTime() > cutoffMs
   ) {
     fail('census_post_cutoff', 'population_census.effective_at',
       'Census effective_at may not be after forecast_cutoff.');
