@@ -1,8 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api/app.js';
 
 describe('API server', () => {
   const app = createApp();
+  const apiKey = 'server-test-api-key';
+  const jsonHeaders = { 'content-type': 'application/json', 'x-api-key': apiKey };
+  let previousApiKey: string | undefined;
+
+  beforeAll(() => {
+    previousApiKey = process.env.FORECAST_API_KEY;
+    process.env.FORECAST_API_KEY = apiKey;
+  });
+
+  afterAll(() => {
+    if (previousApiKey === undefined) {
+      delete process.env.FORECAST_API_KEY;
+    } else {
+      process.env.FORECAST_API_KEY = previousApiKey;
+    }
+  });
   const leagueContext = {
     teams: 12,
     starters: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1 },
@@ -102,7 +118,7 @@ describe('API server', () => {
   it('scores weekly players through the scoring API', async () => {
     const response = await app.request('/api/scoring/weekly/batch', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       body: JSON.stringify({
         league_context: leagueContext,
         players: [weeklyPlayers[0]],
@@ -141,7 +157,7 @@ describe('API server', () => {
   it('returns Tiber weekly player card payloads', async () => {
     const response = await app.request('/api/tiber/weekly/player-card', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       body: JSON.stringify({
         league_context: leagueContext,
         players: [weeklyPlayers[0]],
@@ -167,7 +183,7 @@ describe('API server', () => {
   it('returns Tiber weekly rankings rows', async () => {
     const response = await app.request('/api/tiber/weekly/rankings', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       body: JSON.stringify({
         league_context: leagueContext,
         players: weeklyPlayers,
@@ -191,7 +207,7 @@ describe('API server', () => {
   it('returns Tiber ROS player card with weekly + ROS values', async () => {
     const response = await app.request('/api/tiber/ros/player-card', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       body: JSON.stringify({
         league_context: leagueContext,
         players: [weeklyPlayers[1]],
@@ -217,7 +233,7 @@ describe('API server', () => {
   it('returns clear 400s for invalid Tiber route shapes', async () => {
     const response = await app.request('/api/tiber/weekly/player-card', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       body: JSON.stringify({
         league_context: leagueContext,
         players: weeklyPlayers,
@@ -234,7 +250,7 @@ describe('API server', () => {
   it('returns a stable Tiber weekly comparison surface', async () => {
     const response = await app.request('/api/tiber/weekly/compare', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       body: JSON.stringify({
         league_context: leagueContext,
         player_a: weeklyPlayers[0],
@@ -278,7 +294,7 @@ describe('API server', () => {
   it('projects scenarios through the API without duplicating business logic', async () => {
     const response = await app.request('/api/project/scenarios', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       body: JSON.stringify({
         scenarios: [
           {

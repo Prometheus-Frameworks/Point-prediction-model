@@ -87,5 +87,19 @@ npm test
 npm run dev:api
 ```
 
+### API authentication
+The compute routes (`/api/scoring/*`, `/api/tiber/*`, `/api/project/scenarios`) are gated behind a shared-secret API key:
+
+- Set `FORECAST_API_KEY` in the server environment. When it is unset, the gated routes fail closed with `503`.
+- Clients must send the key in the `x-api-key` header.
+- Read-only routes (`/`, `/health`, `/studio`, `/api/scenarios`, `/api/decision-board/mock`, `/api/point-scenarios/lab`) remain open.
+
+```bash
+FORECAST_API_KEY=local-dev-key npm run dev:api
+curl -X POST http://localhost:3000/api/scoring/weekly/batch \
+  -H 'content-type: application/json' -H 'x-api-key: local-dev-key' \
+  -d '{"players":[...],"league_context":{...}}'
+```
+
 ## Frontend
 `app/web/` is retained as a non-core/legacy companion app and is not the architectural center of this repository.
