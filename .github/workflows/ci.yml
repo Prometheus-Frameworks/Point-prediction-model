@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # forwardBaseFreezeRecord.test.ts replays governed files via `git show`
+      # from the commit pinned in the freeze record, which is not an ancestor
+      # of main (the feature landed as a squash merge), so a plain checkout
+      # never contains it. Fetch it explicitly; it stays fetchable because
+      # the freeze/forward-base-governed-implementation-v1 branch keeps it
+      # reachable on the remote.
+      - name: Fetch the freeze-record's governed implementation commit
+        run: |
+          git fetch origin "$(jq -r \
+            '.freeze_record.software_and_schema_identity.governed_protocol_implementation.commit' \
+            data/experiments/forwardBaseEval/forward_base_configuration_freeze_record_v1.json)"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run build
+
+      - name: Test
+        run: npm test
