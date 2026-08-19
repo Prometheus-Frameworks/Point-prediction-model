@@ -91,6 +91,7 @@ npm run dev:api
 The compute routes (`/api/scoring/*`, `/api/tiber/*`, `/api/project/scenarios`) are gated behind a shared-secret API key:
 
 - Set `FORECAST_API_KEY` in the server environment. When it is unset, the gated routes fail closed with `503`.
+- Multiple keys may be configured as a comma-separated list (any listed key is accepted). This enables zero-downtime rotation — add the new key, migrate callers, then remove the old one — and per-consumer keys that can be revoked individually.
 - Clients must send the key in the `x-api-key` header.
 - Read-only routes (`/`, `/health`, `/studio`, `/api/scenarios`, `/api/decision-board/mock`, `/api/point-scenarios/lab`) remain open.
 

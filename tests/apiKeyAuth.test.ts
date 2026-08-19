@@ -89,6 +89,21 @@ describe('API key gate', () => {
     expect(response.status).toBe(401);
   });
 
+  it('accepts any key from a comma-separated list, and only those keys', async () => {
+    process.env.FORECAST_API_KEY = 'first-key, second-key';
+
+    const requestWithKey = (key: string) =>
+      app.request('/api/scoring/weekly/batch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': key },
+        body: validBatchBody,
+      });
+
+    expect((await requestWithKey('first-key')).status).toBe(200);
+    expect((await requestWithKey('second-key')).status).toBe(200);
+    expect((await requestWithKey('third-key')).status).toBe(401);
+  });
+
   it('accepts gated requests with the configured API key', async () => {
     const response = await app.request('/api/scoring/weekly/batch', {
       method: 'POST',
