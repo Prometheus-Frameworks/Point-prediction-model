@@ -53,6 +53,40 @@ const addOptionalNumberRange = (
   addNumberRange(issues, value, path, minimum, maximum);
 };
 
+// Count fields (weeks, games, roster slots) must be whole numbers: a
+// fractional remaining_weeks, for example, would scale ROS projections by a
+// nonsense multiplier while still returning ok.
+const addIntegerRange = (
+  issues: string[],
+  value: unknown,
+  path: string,
+  minimum: number,
+  maximum: number,
+) => {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    issues.push(`${path} is required and must be an integer.`);
+    return;
+  }
+
+  if (value < minimum || value > maximum) {
+    issues.push(`${path} must be between ${minimum} and ${maximum}. Received ${value}.`);
+  }
+};
+
+const addOptionalIntegerRange = (
+  issues: string[],
+  value: unknown,
+  path: string,
+  minimum: number,
+  maximum: number,
+) => {
+  if (value === undefined) {
+    return;
+  }
+
+  addIntegerRange(issues, value, path, minimum, maximum);
+};
+
 // Rates, shares, and 0-1 indexes from PlayerOpportunityInput.
 const playerRateFields = [
   'injury_risk',
@@ -85,7 +119,10 @@ const playerVolumeFields = [
   'targets_pg',
 ] as const;
 
-// Per-attempt/target yardage efficiency values.
+// Per-attempt/target yardage efficiency values. These are signed: a
+// small-sample rushing average or an average target depth behind the line of
+// scrimmage can legitimately be negative, so the lower bound is a sanity
+// floor rather than zero.
 const playerYardageFields = [
   'pass_yards_per_attempt',
   'rush_yards_per_attempt',
@@ -109,9 +146,9 @@ const validatePlayer = (value: unknown, path: string, issues: string[]) => {
     issues.push(`${path}.position must be one of ${scoringPositions.join(', ')}.`);
   }
 
-  addNumberRange(issues, value.games_sampled, `${path}.games_sampled`, 0, 30);
-  addOptionalNumberRange(issues, value.week, `${path}.week`, 1, 18);
-  addOptionalNumberRange(issues, value.season, `${path}.season`, 2000, 2100);
+  addIntegerRange(issues, value.games_sampled, `${path}.games_sampled`, 0, 30);
+  addOptionalIntegerRange(issues, value.week, `${path}.week`, 1, 18);
+  addOptionalIntegerRange(issues, value.season, `${path}.season`, 2000, 2100);
 
   for (const field of playerRateFields) {
     addOptionalNumberRange(issues, value[field], `${path}.${field}`, 0, 1);
@@ -122,7 +159,7 @@ const validatePlayer = (value: unknown, path: string, issues: string[]) => {
   }
 
   for (const field of playerYardageFields) {
-    addOptionalNumberRange(issues, value[field], `${path}.${field}`, 0, 60);
+    addOptionalNumberRange(issues, value[field], `${path}.${field}`, -20, 60);
   }
 };
 
@@ -141,16 +178,16 @@ const validateLeagueContext = (value: unknown, path: string, issues: string[]) =
     return;
   }
 
-  addNumberRange(issues, value.teams, `${path}.teams`, 2, 32);
+  addIntegerRange(issues, value.teams, `${path}.teams`, 2, 32);
 
   if (!isRecord(value.starters)) {
     issues.push(`${path}.starters is required and must be an object.`);
   } else {
     for (const position of scoringPositions) {
-      addNumberRange(issues, value.starters[position], `${path}.starters.${position}`, 0, 10);
+      addIntegerRange(issues, value.starters[position], `${path}.starters.${position}`, 0, 10);
     }
 
-    addOptionalNumberRange(issues, value.starters.FLEX, `${path}.starters.FLEX`, 0, 10);
+    addOptionalIntegerRange(issues, value.starters.FLEX, `${path}.starters.FLEX`, 0, 10);
   }
 
   if (value.flex_allocation !== undefined) {
@@ -220,7 +257,7 @@ export const validateRosScoringRequest = (body: unknown): string[] => {
   const issues = validateWeeklyScoringRequest(body);
 
   if (isRecord(body)) {
-    addNumberRange(issues, body.remaining_weeks, 'remaining_weeks', 1, 18);
+    addIntegerRange(issues, body.remaining_weeks, 'remaining_weeks', 1, 18);
   }
 
   return issues;

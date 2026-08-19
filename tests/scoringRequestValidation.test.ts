@@ -48,8 +48,43 @@ describe('validateScoringRequest', () => {
       league_context: leagueContext,
     });
 
-    expect(issues).toContain('players[0].games_sampled is required and must be a finite number.');
+    expect(issues).toContain('players[0].games_sampled is required and must be an integer.');
     expect(issues).toContain('players[0].catch_rate is required and must be a finite number.');
+  });
+
+  it('rejects fractional values for count fields', () => {
+    const rosIssues = validateRosScoringRequest({
+      players: [validPlayer],
+      league_context: leagueContext,
+      remaining_weeks: 2.5,
+    });
+
+    expect(rosIssues).toContain('remaining_weeks is required and must be an integer.');
+
+    const weeklyIssues = validateWeeklyScoringRequest({
+      players: [{ ...validPlayer, games_sampled: 15.5, week: 3.7 }],
+      league_context: { ...leagueContext, teams: 11.5 },
+    });
+
+    expect(weeklyIssues).toContain('players[0].games_sampled is required and must be an integer.');
+    expect(weeklyIssues).toContain('players[0].week is required and must be an integer.');
+    expect(weeklyIssues).toContain('league_context.teams is required and must be an integer.');
+  });
+
+  it('allows legitimate negative yardage efficiencies within the sanity floor', () => {
+    expect(
+      validateWeeklyScoringRequest({
+        players: [{ ...validPlayer, rush_yards_per_attempt: -1.2, air_yards_per_target: -0.8 }],
+        league_context: leagueContext,
+      }),
+    ).toEqual([]);
+
+    expect(
+      validateWeeklyScoringRequest({
+        players: [{ ...validPlayer, rush_yards_per_attempt: -35 }],
+        league_context: leagueContext,
+      }),
+    ).toContain('players[0].rush_yards_per_attempt must be between -20 and 60. Received -35.');
   });
 
   it('rejects out-of-range values', () => {
