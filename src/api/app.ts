@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { apiKeyAuth } from './middleware/apiKeyAuth.js';
 import { registerDecisionBoardRoutes } from './routes/decisionBoard.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerPointScenarioLabRoutes } from './routes/pointScenarioLab.js';
@@ -10,6 +11,11 @@ import { registerStudioRoutes } from './routes/studio.js';
 import { registerTiberScoringRoutes } from './routes/tiberScoring.js';
 
 const defaultAllowedOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173'];
+
+// Compute/mutating surfaces gated behind the shared-secret API key (Issue
+// #178). Read-only surfaces (/, /health, /studio, /api/scenarios,
+// /api/decision-board/mock, /api/point-scenarios/lab) stay open.
+const apiKeyGatedRoutes = ['/api/scoring/*', '/api/tiber/*', '/api/project/scenarios'];
 
 const parseAllowedOrigins = () => {
   const configuredOrigins = process.env.CORS_ORIGIN
@@ -36,6 +42,10 @@ export const createApp = () => {
       },
     }),
   );
+
+  for (const route of apiKeyGatedRoutes) {
+    app.use(route, apiKeyAuth());
+  }
 
   app.get('/', (c) =>
     c.json({
