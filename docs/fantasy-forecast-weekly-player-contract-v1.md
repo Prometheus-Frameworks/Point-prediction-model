@@ -135,6 +135,12 @@ The exported reference validators
 validation path for TypeScript consumers: frozen schema check plus the
 cross-field card invariants the schema subset cannot express. Frozen-bytes
 consumers get every request-side rule from the schema alone.
+`validateFantasyForecastWeeklyPlayerExchangeV1(request, response)` is the
+exchange-level rule: a success card must echo the requested player identity
+(`player_id`, `player_name`, `team`, `position`) and the request's
+`season`/`week`, so a correctly shaped but unrelated forecast can never be
+consumed as the answer to a request. An unavailable envelope is a valid
+exchange outcome for any request.
 
 Card point/VORP/range fields are typed as finite numbers with **no magnitude
 bounds**: the scoring kernel does not clamp its outputs, so any request the

@@ -20,6 +20,7 @@ import {
   checkFantasyForecastWeeklyPlayerCardV1Invariants,
   fantasyForecastWeeklyPlayerV1Fixtures,
   validateFantasyForecastWeeklyPlayerCardResponseV1,
+  validateFantasyForecastWeeklyPlayerExchangeV1,
   validateFantasyForecastWeeklyPlayerRequestV1,
 } from '../src/contracts/fantasyForecastWeeklyPlayerV1.js';
 import { canonicalForwardJson } from '../src/serialization/canonicalForwardArtifacts.js';
@@ -271,6 +272,26 @@ describe('FFI-1 cross-field invariants and reference validators', () => {
 
     const combined = validateFantasyForecastWeeklyPlayerRequestV1(request).join('\n');
     expect(combined).toContain('$.players[0].week is not allowed by this contract');
+  });
+
+  it('binds a response to its request: an unrelated but well-formed card fails the exchange', () => {
+    const request = readFrozenJson('fixtures/valid_weekly_player_request.json');
+    const response = readFrozenJson('fixtures/valid_weekly_player_card_response.json') as {
+      data: { card: Record<string, unknown> };
+    };
+    expect(validateFantasyForecastWeeklyPlayerExchangeV1(request, response)).toEqual([]);
+
+    response.data.card.player_id = 'OTHER';
+    response.data.card.season = 2027;
+    response.data.card.week = 18;
+    const issues = validateFantasyForecastWeeklyPlayerExchangeV1(request, response).join('\n');
+    expect(issues).toContain('exchange: card player_id ("OTHER") must echo the requested player player_id');
+    expect(issues).toContain('exchange: card season (2027) must echo the request season (2026)');
+    expect(issues).toContain('exchange: card week (18) must echo the request week (1)');
+
+    // The unavailable envelope is a valid exchange outcome for any request:
+    const unavailable = readFrozenJson('fixtures/weekly_player_card_unavailable_or_stale_state.json');
+    expect(validateFantasyForecastWeeklyPlayerExchangeV1(request, unavailable)).toEqual([]);
   });
 
   it('rejects impossible generated_at calendar instants, not just malformed shapes', () => {

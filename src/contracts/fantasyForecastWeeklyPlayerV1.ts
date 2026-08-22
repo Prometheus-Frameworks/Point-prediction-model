@@ -549,6 +549,55 @@ export const validateFantasyForecastWeeklyPlayerCardResponseV1 = (response: unkn
   return issues;
 };
 
+/** Card fields the engine copies verbatim from the request's single player. */
+const EXCHANGE_IDENTITY_FIELDS = ['player_id', 'player_name', 'team', 'position'] as const;
+
+/**
+ * Exchange-level validation: a response is only a valid answer TO A REQUEST
+ * when, beyond both documents being individually valid, the success card
+ * echoes the request's player identity and horizon. Without this, a correctly
+ * shaped but unrelated forecast (another player, another week) would pass the
+ * documented validators and could be displayed against the wrong player
+ * (Codex review round 5 on PR #183).
+ */
+export const validateFantasyForecastWeeklyPlayerExchangeV1 = (request: unknown, response: unknown): string[] => {
+  const issues = [
+    ...validateFantasyForecastWeeklyPlayerRequestV1(request).map((issue) => `request: ${issue}`),
+    ...validateFantasyForecastWeeklyPlayerCardResponseV1(response).map((issue) => `response: ${issue}`),
+  ];
+
+  if (
+    isRecord(request) &&
+    isRecord(response) &&
+    response.ok === true &&
+    isRecord(response.data) &&
+    isRecord(response.data.card)
+  ) {
+    const card = response.data.card;
+    const player = Array.isArray(request.players) && isRecord(request.players[0]) ? request.players[0] : undefined;
+
+    if (player) {
+      for (const field of EXCHANGE_IDENTITY_FIELDS) {
+        if (card[field] !== player[field]) {
+          issues.push(
+            `exchange: card ${field} (${JSON.stringify(card[field])}) must echo the requested player ${field} (${JSON.stringify(player[field])}).`,
+          );
+        }
+      }
+    }
+
+    for (const field of ['season', 'week'] as const) {
+      if (card[field] !== request[field]) {
+        issues.push(
+          `exchange: card ${field} (${JSON.stringify(card[field])}) must echo the request ${field} (${JSON.stringify(request[field])}).`,
+        );
+      }
+    }
+  }
+
+  return issues;
+};
+
 // ---------------------------------------------------------------------------
 // Golden fixtures. The valid request is the source of the valid response card:
 // the card fixture is produced by the actual scoring services and transforms,
