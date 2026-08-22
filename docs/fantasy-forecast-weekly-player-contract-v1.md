@@ -1,9 +1,10 @@
-# Fantasy ↔ Forecast weekly-player contract v1 (FFI-1)
+# Fantasy ↔ Forecast weekly-player contract v1 (FFI-1 / FFI-2)
 
-Status: **contract + golden fixtures only** — no runtime, auth, model, or
-deployment behavior changed. Defined under TIBER-Forecast #182 as the first
-slice of the interface-hardening program in TIBER-Ops #71 (FFI-0 census,
-2026-08-22).
+Status: contract + golden fixtures (FFI-1, merged) and **Forecast runtime
+conformance for the weekly player-card route** (FFI-2). No auth, model,
+scoring-math, deployment, or Fantasy-side behavior changed. Defined under
+TIBER-Forecast #182 as the first slices of the interface-hardening program in
+TIBER-Ops #71 (FFI-0 census, 2026-08-22).
 
 The seam this contract proves offline:
 
@@ -210,21 +211,33 @@ and offline:
 - zero, null, omitted, unavailable, and malformed remain distinguishable;
 - the schema-subset validator fails closed on unsupported keywords.
 
-## Known FFI-2 conformance debt (deliberate, not implemented here)
+## FFI-2 runtime conformance (weekly player-card route)
 
-The current runtime differs from this contract in exactly these ways; making
-runtime conform is FFI-2 scope and needs its own authorization:
+`POST /api/tiber/weekly/player-card` now conforms to this contract:
 
-1. The runtime card and envelope do not yet emit `contract`,
-   `contract_version`, card `season`/`week`, or `scoring_profile`.
-2. The runtime request validator ignores unknown fields instead of rejecting
-   them, does not require top-level `contract`/`horizon`/`season`/`week`/
-   `scoring_profile`, and enforces single-player at the route rather than in
-   the request shape.
-3. The runtime unavailable path returns `ok: false` envelopes without envelope
-   contract identity.
+1. Requests are validated by `validateFantasyForecastWeeklyPlayerRequestV1`
+   (fail closed: contract identity, weekly horizon, top-level `season`/`week`,
+   scoring profile, unknown-field rejection, single-player shape in the
+   schema). Rejections return an **identified** v1 failure envelope with
+   `BAD_REQUEST` issues.
+2. Responses are built by
+   `src/services/scoring/buildFantasyForecastWeeklyPlayerCardV1Service.ts`,
+   which wraps the unchanged scoring path and adds exactly the v1 identity:
+   envelope contract/version on both branches, card contract/version,
+   `season`/`week` echoed from the request (the frozen exchange rule), and
+   the pinned scoring-profile identity. Failure envelopes always carry at
+   least one machine-readable error.
+3. The contract test suite proves the live route now reproduces the frozen
+   golden response byte-for-byte (clock aside) and that failure envelopes
+   themselves validate against the frozen response schema.
 
-Deferred to later phases: weekly rankings adoption (FFI-2+), Fantasy adapter
+A consequence by design: the pre-contract request shape (bare
+`players`/`league_context`, Fantasy's current payload) is now rejected with
+400 on this route. That seam was already deterministically broken (FFI-0);
+Fantasy adopts the v1 contract in FFI-3. The other tiber/scoring routes keep
+their pre-contract behavior until their own contract phases.
+
+Deferred to later phases: weekly rankings adoption, Fantasy adapter
 conformance and readiness repair (FFI-3), cross-repo fixture gates (FFI-4),
 the ROS contract including `remaining_weeks`/Week-18 semantics (FFI-5), and
 any auth/deployment activation (FFI-7, Forecast #179).

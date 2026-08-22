@@ -159,6 +159,12 @@ describe('API server', () => {
       method: 'POST',
       headers: jsonHeaders,
       body: JSON.stringify({
+        contract: 'fantasy_forecast.weekly_player_request',
+        contract_version: '1.0.0',
+        horizon: 'weekly',
+        season: 2026,
+        week: 1,
+        scoring_profile: 'tiber-generic-full-ppr-v1',
         league_context: leagueContext,
         players: [weeklyPlayers[0]],
       }),
@@ -167,9 +173,16 @@ describe('API server', () => {
 
     expect(response.status).toBe(200);
     expect(payload.ok).toBe(true);
+    expect(payload.contract).toBe('fantasy_forecast.weekly_player_card_response');
+    expect(payload.contract_version).toBe('1.0.0');
     expect(payload.data.card).toEqual(
       expect.objectContaining({
+        contract: 'fantasy_forecast.weekly_player_card',
+        contract_version: '1.0.0',
         player_id: 'qb-a',
+        season: 2026,
+        week: 1,
+        scoring_profile: 'tiber-generic-full-ppr-v1',
         scoring_mode: 'weekly',
         view_type: 'player_card',
         scoring_components: expect.objectContaining({
@@ -178,6 +191,26 @@ describe('API server', () => {
         }),
       }),
     );
+  });
+
+  it('rejects a pre-contract weekly player-card body with an identified v1 failure envelope', async () => {
+    const response = await app.request('/api/tiber/weekly/player-card', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({
+        league_context: leagueContext,
+        players: [weeklyPlayers[0]],
+      }),
+    });
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.ok).toBe(false);
+    expect(payload.contract).toBe('fantasy_forecast.weekly_player_card_response');
+    expect(payload.contract_version).toBe('1.0.0');
+    expect(payload.errors.length).toBeGreaterThan(0);
+    expect(payload.errors[0].code).toBe('BAD_REQUEST');
+    expect(payload.errors.map((error: { message: string }) => error.message).join('\n')).toContain('$.contract is required.');
   });
 
   it('returns Tiber weekly rankings rows', async () => {
@@ -231,10 +264,18 @@ describe('API server', () => {
   });
 
   it('returns clear 400s for invalid Tiber route shapes', async () => {
+    // The v1 contract enforces the single-player rule in the request schema
+    // (players maxItems 1) rather than as a route-level check.
     const response = await app.request('/api/tiber/weekly/player-card', {
       method: 'POST',
       headers: jsonHeaders,
       body: JSON.stringify({
+        contract: 'fantasy_forecast.weekly_player_request',
+        contract_version: '1.0.0',
+        horizon: 'weekly',
+        season: 2026,
+        week: 1,
+        scoring_profile: 'tiber-generic-full-ppr-v1',
         league_context: leagueContext,
         players: weeklyPlayers,
       }),
@@ -244,7 +285,9 @@ describe('API server', () => {
     expect(response.status).toBe(400);
     expect(payload.ok).toBe(false);
     expect(payload.errors[0].code).toBe('BAD_REQUEST');
-    expect(payload.errors[0].message).toContain('exactly one player');
+    expect(payload.errors.map((error: { message: string }) => error.message).join('\n')).toContain(
+      '$.players must contain at most 1 item(s). Received 2.',
+    );
   });
 
   it('returns a stable Tiber weekly comparison surface', async () => {
