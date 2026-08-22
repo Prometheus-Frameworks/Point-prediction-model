@@ -274,6 +274,36 @@ describe('FFI-1 cross-field invariants and reference validators', () => {
     expect(combined).toContain('$.players[0].week is not allowed by this contract');
   });
 
+  it('ships the exchange rule across the seam: frozen manifest declaration + public package export', async () => {
+    const manifest = readFrozenJson(MANIFEST_FILE) as {
+      exchange_rule?: {
+        rule_id: string;
+        success_card_must_echo: { from_request_player: string[]; from_request: string[] };
+        failure_envelope_is_valid_for_any_request: boolean;
+      };
+    };
+    // Frozen-bytes consumers get the binding machine-legibly from the manifest:
+    expect(manifest.exchange_rule?.rule_id).toBe('fantasy_forecast.weekly_player_exchange');
+    expect(manifest.exchange_rule?.success_card_must_echo.from_request_player).toEqual([
+      'player_id',
+      'player_name',
+      'team',
+      'position',
+    ]);
+    expect(manifest.exchange_rule?.success_card_must_echo.from_request).toEqual(['season', 'week']);
+    expect(manifest.exchange_rule?.failure_envelope_is_valid_for_any_request).toBe(true);
+
+    // Package consumers reach the executable validators via the supported
+    // entry point (package.json exports only src/public/index.ts):
+    const publicApi = await import('../src/public/index.js');
+    expect(publicApi.validateFantasyForecastWeeklyPlayerExchangeV1).toBe(validateFantasyForecastWeeklyPlayerExchangeV1);
+    expect(typeof publicApi.validateFantasyForecastWeeklyPlayerRequestV1).toBe('function');
+    expect(typeof publicApi.validateFantasyForecastWeeklyPlayerCardResponseV1).toBe('function');
+    expect(publicApi.FANTASY_FORECAST_WEEKLY_PLAYER_EXCHANGE_RULE_V1.rule_id).toBe(
+      'fantasy_forecast.weekly_player_exchange',
+    );
+  });
+
   it('binds a response to its request: an unrelated but well-formed card fails the exchange', () => {
     const request = readFrozenJson('fixtures/valid_weekly_player_request.json');
     const response = readFrozenJson('fixtures/valid_weekly_player_card_response.json') as {

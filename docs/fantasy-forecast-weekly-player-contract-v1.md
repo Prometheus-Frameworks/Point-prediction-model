@@ -140,7 +140,12 @@ exchange-level rule: a success card must echo the requested player identity
 (`player_id`, `player_name`, `team`, `position`) and the request's
 `season`/`week`, so a correctly shaped but unrelated forecast can never be
 consumed as the answer to a request. An unavailable envelope is a valid
-exchange outcome for any request.
+exchange outcome for any request. The rule ships across the seam twice from
+one source constant (`FANTASY_FORECAST_WEEKLY_PLAYER_EXCHANGE_RULE_V1`):
+declaratively as the `exchange_rule` block in the frozen `manifest.v1.json`
+for consumers that vendor only bytes, and executably through the supported
+package entry point (`src/public/index.ts` re-exports this contract module
+and the schema-subset validator).
 
 Card point/VORP/range fields are typed as finite numbers with **no magnitude
 bounds**: the scoring kernel does not clamp its outputs, so any request the

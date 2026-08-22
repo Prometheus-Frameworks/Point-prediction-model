@@ -549,8 +549,22 @@ export const validateFantasyForecastWeeklyPlayerCardResponseV1 = (response: unkn
   return issues;
 };
 
-/** Card fields the engine copies verbatim from the request's single player. */
-const EXCHANGE_IDENTITY_FIELDS = ['player_id', 'player_name', 'team', 'position'] as const;
+/**
+ * Declarative exchange rule, frozen into `manifest.v1.json` so a consumer that
+ * vendors only the frozen bytes still receives the request/response binding
+ * machine-legibly: a success card must echo the listed fields from the
+ * request's single player and from the request itself. The reference
+ * validator below consumes this same constant — one source, two transports.
+ */
+export const FANTASY_FORECAST_WEEKLY_PLAYER_EXCHANGE_RULE_V1 = {
+  rule_id: 'fantasy_forecast.weekly_player_exchange',
+  rule_version: FANTASY_FORECAST_WEEKLY_PLAYER_CONTRACT_VERSION,
+  success_card_must_echo: {
+    from_request_player: ['player_id', 'player_name', 'team', 'position'],
+    from_request: ['season', 'week'],
+  },
+  failure_envelope_is_valid_for_any_request: true,
+} as const;
 
 /**
  * Exchange-level validation: a response is only a valid answer TO A REQUEST
@@ -558,7 +572,7 @@ const EXCHANGE_IDENTITY_FIELDS = ['player_id', 'player_name', 'team', 'position'
  * echoes the request's player identity and horizon. Without this, a correctly
  * shaped but unrelated forecast (another player, another week) would pass the
  * documented validators and could be displayed against the wrong player
- * (Codex review round 5 on PR #183).
+ * (Codex review rounds 5–6 on PR #183).
  */
 export const validateFantasyForecastWeeklyPlayerExchangeV1 = (request: unknown, response: unknown): string[] => {
   const issues = [
@@ -577,7 +591,7 @@ export const validateFantasyForecastWeeklyPlayerExchangeV1 = (request: unknown, 
     const player = Array.isArray(request.players) && isRecord(request.players[0]) ? request.players[0] : undefined;
 
     if (player) {
-      for (const field of EXCHANGE_IDENTITY_FIELDS) {
+      for (const field of FANTASY_FORECAST_WEEKLY_PLAYER_EXCHANGE_RULE_V1.success_card_must_echo.from_request_player) {
         if (card[field] !== player[field]) {
           issues.push(
             `exchange: card ${field} (${JSON.stringify(card[field])}) must echo the requested player ${field} (${JSON.stringify(player[field])}).`,
@@ -586,7 +600,7 @@ export const validateFantasyForecastWeeklyPlayerExchangeV1 = (request: unknown, 
       }
     }
 
-    for (const field of ['season', 'week'] as const) {
+    for (const field of FANTASY_FORECAST_WEEKLY_PLAYER_EXCHANGE_RULE_V1.success_card_must_echo.from_request) {
       if (card[field] !== request[field]) {
         issues.push(
           `exchange: card ${field} (${JSON.stringify(card[field])}) must echo the request ${field} (${JSON.stringify(request[field])}).`,
@@ -928,6 +942,7 @@ export const buildFantasyForecastWeeklyPlayerContractV1Artifacts =
       scoring_profile_sha256: TIBER_GENERIC_FULL_PPR_V1_SHA256,
       horizon: 'weekly',
       generated_at_policy: `All fixture clocks are pinned to ${FIXTURE_GENERATED_AT} for byte determinism.`,
+      exchange_rule: FANTASY_FORECAST_WEEKLY_PLAYER_EXCHANGE_RULE_V1,
       schemas: schemaArtifacts.map((artifact) => ({
         path: artifact.relativePath,
         sha256: artifact.sha256,
