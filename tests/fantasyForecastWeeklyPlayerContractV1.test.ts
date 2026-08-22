@@ -342,6 +342,17 @@ describe('FFI-1 cross-field invariants and reference validators', () => {
     expect(validateJsonSchemaSubset(response, frozenResponseSchema)).toEqual([]);
   });
 
+  it('flags a one-cent VORP drift even when the component mirror carries the same wrong value', () => {
+    const card = buildValidWeeklyPlayerCardFixture() as unknown as Record<string, unknown>;
+    // Engine identity for the fixture: 15.43 - 8.68 = 6.75. A consistent 6.76
+    // on both fields must still be rejected.
+    card.vorp = (card.vorp as number) + 0.01;
+    (card.scoring_components as Record<string, unknown>).vorp = card.vorp;
+    expect(checkFantasyForecastWeeklyPlayerCardV1Invariants(card).join('\n')).toContain(
+      'vorp must equal roundTo(expected_points - replacement_points, 2)',
+    );
+  });
+
   it('flags a median that drifts from expected_points even inside the bracket', () => {
     const card = buildValidWeeklyPlayerCardFixture() as unknown as Record<string, unknown>;
     card.expected_points = 10;

@@ -503,9 +503,13 @@ export const checkFantasyForecastWeeklyPlayerCardV1Invariants = (card: unknown):
   }
 
   if ([expected_points, replacement_points, vorp].every((value) => typeof value === 'number')) {
-    if (Math.abs(vorp - (expected_points - replacement_points)) > 0.011) {
+    // calculateVorp guarantees vorp === roundTo(expected_points -
+    // replacement_points), so compare against that exact rounded result
+    // (floating-point epsilon only) — a looser cent-scale tolerance would
+    // accept a consistently corrupted vorp/component pair.
+    if (Math.abs(vorp - roundTo(expected_points - replacement_points)) > 1e-9) {
       issues.push(
-        `vorp must equal expected_points - replacement_points within 2-decimal rounding. ` +
+        `vorp must equal roundTo(expected_points - replacement_points, 2). ` +
           `Received ${vorp} vs ${expected_points} - ${replacement_points}.`,
       );
     }
