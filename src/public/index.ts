@@ -822,3 +822,13 @@ export * from '../artifacts/writeForwardCandidateArtifacts.js';
 // its verification context and receipt types — was unreachable through every
 // supported package specifier.
 export * from '../contracts/weeklyForecastPublication.js';
+
+// FFI-1 Fantasy ↔ Forecast weekly-player contract v1 (TIBER-Forecast #182).
+// The frozen schema/fixture bytes under data/contracts/ carry every
+// single-document rule and the declarative exchange rule in the manifest;
+// this export makes the executable reference validators — including the
+// exchange-level request/response binding — reachable through the supported
+// package entry point, so a TypeScript consumer is never forced to
+// re-implement the exchange rule from the manifest alone.
+export * from '../contracts/fantasyForecastWeeklyPlayerV1.js';
+export * from '../validation/validateJsonSchemaSubset.js';

@@ -15,5 +15,8 @@
   // checked with it and nothing else is.
   "extends": "./tsconfig.json",
   "include": [],
-  "files": ["scripts/buildWeek1PublicationFixture.ts"]
+  "files": [
+    "scripts/buildWeek1PublicationFixture.ts",
+    "scripts/generateFantasyForecastWeeklyPlayerContractV1.ts"
+  ]
 }
