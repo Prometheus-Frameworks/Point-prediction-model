@@ -16,6 +16,8 @@
     "typecheck:fixture-builder": "tsc --noEmit -p tsconfig.fixtureBuilder.json",
     "test": "vitest run",
     "export:point-scenario-lab": "tsx scripts/exportPointScenarioLab.ts",
+    "generate:fantasy-forecast-weekly-player-contract-v1": "tsx scripts/generateFantasyForecastWeeklyPlayerContractV1.ts",
+    "check:fantasy-forecast-weekly-player-contract-v1": "tsx scripts/generateFantasyForecastWeeklyPlayerContractV1.ts --check",
     "evaluate:run2-coverage-gate": "tsx scripts/runRun2CoverageGateEvaluation.ts",
     "evaluate:player-season-coverage-gate": "tsx scripts/runPlayerSeasonCoverageGateEvaluation.ts",
     "scaffold:player-history-features": "tsx scripts/runPlayerHistoryFeatureScaffold.ts",

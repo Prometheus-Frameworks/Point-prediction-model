@@ -1,0 +1,1 @@
+{"contract":"fantasy_forecast.weekly_player_request","contract_version":"1.0.0","horizon":"weekly","league_context":{"starters":{"QB":1,"RB":2,"TE":1,"WR":3},"teams":12},"players":[{"games_sampled":null,"player_id":"","player_name":null,"position":"K","team":null}],"scoring_profile":"tiber-generic-full-ppr-v1","season":2026,"week":1}
