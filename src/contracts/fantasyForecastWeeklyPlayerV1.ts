@@ -126,12 +126,22 @@ export type FantasyForecastWeeklyPlayerCardResponseV1 =
 // be looser or stricter than Forecast's own scoring semantics.
 // ---------------------------------------------------------------------------
 
-const requiredString: JsonSchemaSubsetObject = { type: 'string', minLength: 1 };
+// Required strings must contain at least one non-whitespace character,
+// mirroring the runtime validator's trim-then-check semantics — `" "` is not a
+// valid identity value there and must not be valid here.
+const requiredString: JsonSchemaSubsetObject = { type: 'string', minLength: 1, pattern: '\\S' };
 const rateField: JsonSchemaSubsetObject = { type: 'number', minimum: 0, maximum: 1 };
 const volumeField: JsonSchemaSubsetObject = { type: 'number', minimum: 0, maximum: 100 };
 const yardageField: JsonSchemaSubsetObject = { type: 'number', minimum: -20, maximum: 60 };
 const starterSlots: JsonSchemaSubsetObject = { type: 'integer', minimum: 0, maximum: 10 };
-const weeklyPoints: JsonSchemaSubsetObject = { type: 'number', minimum: 0, maximum: 100 };
+// Request-side override bound — mirrors the runtime validator's 0..100 check.
+const replacementOverridePoints: JsonSchemaSubsetObject = { type: 'number', minimum: 0, maximum: 100 };
+// Card outputs carry no magnitude bounds: the scoring kernel does not clamp,
+// so any request the contract admits must yield a card the contract admits
+// (finiteness is enforced by the subset validator's number check). Inventing
+// tighter bounds here made contract-valid requests able to produce
+// contract-invalid cards (Codex review on PR #183).
+const finiteNumber: JsonSchemaSubsetObject = { type: 'number' };
 
 const playerRateFields = [
   'injury_risk',
@@ -247,7 +257,12 @@ export const fantasyForecastWeeklyPlayerRequestV1Schema: JsonSchemaSubsetObject 
     replacement_points_override: {
       type: 'object',
       additionalProperties: false,
-      properties: { QB: weeklyPoints, RB: weeklyPoints, WR: weeklyPoints, TE: weeklyPoints },
+      properties: {
+        QB: replacementOverridePoints,
+        RB: replacementOverridePoints,
+        WR: replacementOverridePoints,
+        TE: replacementOverridePoints,
+      },
     },
     // Reserved by the ROS contract family; mechanically rejected on the weekly seam.
     remaining_weeks: false,
@@ -301,12 +316,12 @@ export const fantasyForecastWeeklyPlayerCardV1Schema: JsonSchemaSubsetObject = {
     season: { type: 'integer', minimum: 2000, maximum: 2100 },
     week: { type: 'integer', minimum: 1, maximum: 18 },
     scoring_profile: { const: FANTASY_FORECAST_WEEKLY_PLAYER_SCORING_PROFILE },
-    expected_points: weeklyPoints,
-    replacement_points: weeklyPoints,
-    vorp: { type: 'number', minimum: -100, maximum: 100 },
-    floor: weeklyPoints,
-    median: weeklyPoints,
-    ceiling: weeklyPoints,
+    expected_points: finiteNumber,
+    replacement_points: finiteNumber,
+    vorp: finiteNumber,
+    floor: finiteNumber,
+    median: finiteNumber,
+    ceiling: finiteNumber,
     confidence_band: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },
     volatility_tag: { type: 'string', enum: ['STABLE', 'MODERATE', 'VOLATILE'] },
     fragility_tag: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },
@@ -319,12 +334,12 @@ export const fantasyForecastWeeklyPlayerCardV1Schema: JsonSchemaSubsetObject = {
       additionalProperties: false,
       required: ['expected_points', 'replacement_points', 'vorp', 'floor', 'median', 'ceiling'],
       properties: {
-        expected_points: weeklyPoints,
-        replacement_points: weeklyPoints,
-        vorp: { type: 'number', minimum: -100, maximum: 100 },
-        floor: weeklyPoints,
-        median: weeklyPoints,
-        ceiling: weeklyPoints,
+        expected_points: finiteNumber,
+        replacement_points: finiteNumber,
+        vorp: finiteNumber,
+        floor: finiteNumber,
+        median: finiteNumber,
+        ceiling: finiteNumber,
       },
     },
     generated_at: { type: 'string', pattern: ISO_UTC_TIMESTAMP_PATTERN },
@@ -401,23 +416,39 @@ export const fantasyForecastWeeklyPlayerCardResponseV1Schema: JsonSchemaSubsetOb
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** Week/season on the player must agree with the request's declared horizon. */
+/**
+ * Week/season on every player-shaped entry must agree with the request's
+ * declared horizon. This covers `comparison_pool` too, not just `players`:
+ * `resolveReplacementPoints` folds the comparison pool into the replacement
+ * baseline once the combined pool reaches eight players, so a week- or
+ * season-mismatched pool would silently shift replacement points and VORP for
+ * the declared week (Codex review on PR #183).
+ */
 export const checkFantasyForecastWeeklyPlayerRequestV1Invariants = (request: unknown): string[] => {
   const issues: string[] = [];
   if (!isRecord(request)) return ['request must be an object'];
 
-  const players = Array.isArray(request.players) ? request.players : [];
-  players.forEach((player, index) => {
-    if (!isRecord(player)) return;
-    if (player.week !== undefined && player.week !== request.week) {
-      issues.push(`players[${index}].week (${String(player.week)}) must equal request week (${String(request.week)}).`);
-    }
-    if (player.season !== undefined && player.season !== request.season) {
-      issues.push(
-        `players[${index}].season (${String(player.season)}) must equal request season (${String(request.season)}).`,
-      );
-    }
-  });
+  const playerGroups: Array<[string, unknown]> = [
+    ['players', request.players],
+    ['comparison_pool', request.comparison_pool],
+  ];
+
+  for (const [groupName, group] of playerGroups) {
+    const entries = Array.isArray(group) ? group : [];
+    entries.forEach((player, index) => {
+      if (!isRecord(player)) return;
+      if (player.week !== undefined && player.week !== request.week) {
+        issues.push(
+          `${groupName}[${index}].week (${String(player.week)}) must equal request week (${String(request.week)}).`,
+        );
+      }
+      if (player.season !== undefined && player.season !== request.season) {
+        issues.push(
+          `${groupName}[${index}].season (${String(player.season)}) must equal request season (${String(request.season)}).`,
+        );
+      }
+    });
+  }
 
   return issues;
 };

@@ -203,6 +203,20 @@ describe('FFI-1 zero / null / omitted / unavailable distinguishability', () => {
     expect(issues).toContain('goal_line_rush_attempts_pg must be of type number. Received null');
   });
 
+  it('rejects whitespace-only required identity strings like the runtime trim check does', () => {
+    const request = buildValidWeeklyPlayerRequestFixture();
+    request.players[0].player_id = ' ';
+    request.players[0].player_name = '\t';
+
+    const schemaIssues = validateJsonSchemaSubset(request, frozenRequestSchema).join('\n');
+    expect(schemaIssues).toContain('$.players[0].player_id must match pattern');
+    expect(schemaIssues).toContain('$.players[0].player_name must match pattern');
+
+    const runtimeIssues = validateWeeklyScoringRequest(request).join('\n');
+    expect(runtimeIssues).toContain('players[0].player_id');
+    expect(runtimeIssues).toContain('players[0].player_name');
+  });
+
   it('rejects unknown request fields instead of ignoring them (fail-closed extensibility)', () => {
     const request = { ...buildValidWeeklyPlayerRequestFixture(), projection_horizon: 'ros' } as Record<string, unknown>;
     const issues = validateJsonSchemaSubset(request, frozenRequestSchema).join('\n');
@@ -234,6 +248,39 @@ describe('FFI-1 cross-field invariants', () => {
       data: { card: unknown };
     };
     expect(checkFantasyForecastWeeklyPlayerCardV1Invariants(response.data.card)).toEqual([]);
+  });
+
+  it('flags horizon-inconsistent comparison_pool entries (they feed the replacement baseline)', () => {
+    const request = buildValidWeeklyPlayerRequestFixture();
+    request.comparison_pool = [
+      { ...request.players[0], player_id: 'TIBER-FIXTURE-WR-0002', week: FIXTURE_WEEK + 2 },
+      { ...request.players[0], player_id: 'TIBER-FIXTURE-WR-0003', season: FIXTURE_SEASON - 1 },
+    ];
+    const issues = checkFantasyForecastWeeklyPlayerRequestV1Invariants(request).join('\n');
+    expect(issues).toContain('comparison_pool[0].week');
+    expect(issues).toContain('comparison_pool[1].season');
+  });
+
+  it('accepts unbounded but finite card magnitudes (the kernel does not clamp)', () => {
+    const response = readFrozenJson('fixtures/valid_weekly_player_card_response.json') as {
+      data: { card: Record<string, unknown> };
+    };
+    const card = response.data.card;
+    card.expected_points = 640.55;
+    card.replacement_points = 8.68;
+    card.vorp = 631.87;
+    card.floor = -12.4;
+    card.median = 640.55;
+    card.ceiling = 980.14;
+    card.scoring_components = {
+      expected_points: 640.55,
+      replacement_points: 8.68,
+      vorp: 631.87,
+      floor: -12.4,
+      median: 640.55,
+      ceiling: 980.14,
+    };
+    expect(validateJsonSchemaSubset(response, frozenResponseSchema)).toEqual([]);
   });
 
   it('flags horizon-inconsistent player week/season on the request', () => {
@@ -362,5 +409,20 @@ describe('FFI-1 subset validator fails closed', () => {
     expect(() =>
       validateJsonSchemaSubset({ a: 1 }, { type: 'object', patternProperties: {} } as unknown as JsonSchemaSubset),
     ).toThrow(UnsupportedJsonSchemaKeywordError);
+  });
+
+  it('throws on unsupported keywords in subschemas the instance never reaches', () => {
+    const schema = {
+      type: 'object',
+      properties: { optional: { patternProperties: {} } },
+    } as unknown as JsonSchemaSubset;
+    // The instance omits `optional`, so only a full schema-tree pre-pass can
+    // catch the unsupported keyword.
+    expect(() => validateJsonSchemaSubset({}, schema)).toThrow(UnsupportedJsonSchemaKeywordError);
+
+    const nested = {
+      oneOf: [{ type: 'object', properties: { deep: { items: { unevaluatedProperties: false } } } }],
+    } as unknown as JsonSchemaSubset;
+    expect(() => validateJsonSchemaSubset({}, nested)).toThrow(UnsupportedJsonSchemaKeywordError);
   });
 });

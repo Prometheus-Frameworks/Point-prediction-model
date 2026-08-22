@@ -43,7 +43,9 @@ Rejected alternatives: hand-maintained duplicate types in both repositories
 validator dependency (new dependencies are out of FFI-1 scope; instead the
 schemas are constrained to a small keyword subset enforced by
 `src/validation/validateJsonSchemaSubset.ts`, which **fails closed** on any
-keyword it cannot enforce).
+keyword it cannot enforce — the whole schema tree is asserted up front, so an
+unsupported keyword cannot hide in a subschema the current instance happens
+not to reach).
 
 ## Contract objects
 
@@ -67,9 +69,14 @@ Frozen schema: `fantasy_forecast_weekly_player_request.v1.schema.json`
   mechanically single-player, replacing today's route-level length check).
   Required identity: non-empty `player_id` (canonical TIBER id; GSIS-style in
   production), `player_name`, `team`, supported `position` (QB/RB/WR/TE), and
-  integer `games_sampled` 0–30. Optional opportunity fields carry exactly the
-  runtime validator's bounds: rates/shares 0–1, per-game volumes 0–100, signed
-  per-attempt yardage −20–60.
+  integer `games_sampled` 0–30. Required strings must contain at least one
+  non-whitespace character (`pattern: \S`), mirroring the runtime validator's
+  trim-then-check rule. Optional opportunity fields carry exactly the runtime
+  validator's bounds: rates/shares 0–1, per-game volumes 0–100, signed
+  per-attempt yardage −20–60. The horizon-consistency invariant
+  (`checkFantasyForecastWeeklyPlayerRequestV1Invariants`) applies to
+  `comparison_pool` entries as well as `players`, because the comparison pool
+  feeds the replacement baseline once the combined pool reaches eight players.
 - **League replacement context**: `league_context.teams` (2–32) and
   `starters.QB/RB/WR/TE` (0–10, `FLEX` optional) are required — this is the
   context Fantasy omits today and Forecast needs for replacement/VORP.
@@ -110,6 +117,13 @@ The card requires: contract identity; player identity (`player_id`,
 `checkFantasyForecastWeeklyPlayerCardV1Invariants` along with
 `floor ≤ median ≤ ceiling` and the VORP identity); `generated_at`
 (ISO-8601 UTC); `scoring_mode: "weekly"`; `view_type: "player_card"`.
+
+Card point/VORP/range fields are typed as finite numbers with **no magnitude
+bounds**: the scoring kernel does not clamp its outputs, so any request the
+contract admits must yield a card the contract admits — inventing tighter
+response bounds would let a contract-valid request produce a contract-invalid
+card. (The 0–100 bound on the request's `replacement_points_override` stays,
+because the runtime request validator enforces exactly that.)
 
 **Weekly can never be consumed as ROS**, mechanically:
 

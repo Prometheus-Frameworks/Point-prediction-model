@@ -70,6 +70,29 @@ export class UnsupportedJsonSchemaKeywordError extends Error {
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+/**
+ * Recursively assert that EVERY subschema in the tree uses only supported
+ * keywords — including subschemas for optional properties the instance under
+ * validation happens to omit. Without this pre-pass, an unsupported constraint
+ * hiding in an unvisited branch would remain silently unenforced instead of
+ * throwing (Codex review on PR #183).
+ */
+const assertSchemaTreeSupported = (schema: JsonSchemaSubset, schemaPath: string): void => {
+  if (typeof schema === 'boolean') return;
+
+  assertSupportedKeywords(schema, schemaPath);
+
+  for (const [key, propertySchema] of Object.entries(schema.properties ?? {})) {
+    assertSchemaTreeSupported(propertySchema, `${schemaPath}.properties.${key}`);
+  }
+  if (schema.items !== undefined) {
+    assertSchemaTreeSupported(schema.items, `${schemaPath}.items`);
+  }
+  (schema.oneOf ?? []).forEach((branch, index) => {
+    assertSchemaTreeSupported(branch, `${schemaPath}.oneOf[${index}]`);
+  });
+};
+
 const describeType = (value: unknown): string => {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'array';
@@ -217,6 +240,7 @@ const validateNode = (
  * `src/api/validation/validateScoringRequest.ts`.
  */
 export const validateJsonSchemaSubset = (value: unknown, schema: JsonSchemaSubset): string[] => {
+  assertSchemaTreeSupported(schema, '#');
   const issues: string[] = [];
   validateNode(value, schema, '$', '#', issues);
   return issues;
