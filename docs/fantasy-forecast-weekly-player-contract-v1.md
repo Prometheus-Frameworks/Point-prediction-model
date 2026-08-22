@@ -57,9 +57,11 @@ Frozen schema: `fantasy_forecast_weekly_player_request.v1.schema.json`
 - **Identity**: `contract`, `contract_version`, and `horizon: "weekly"` are
   required constants — a request cannot exist without declaring its horizon.
 - **Clock/context**: top-level `season` (2000–2100) and `week` (1–18) are
-  required. Per-player `week`/`season` stay optional (current runtime
-  semantics) but must equal the top-level values when present (cross-field
-  invariant `checkFantasyForecastWeeklyPlayerRequestV1Invariants`).
+  required and are the **only** horizon source: per-player `week`/`season` are
+  rejected outright (schema `false`) on `players` and `comparison_pool` alike.
+  This makes a horizon-divergent comparison pool — which feeds the replacement
+  baseline once the combined pool reaches eight players — impossible from the
+  frozen schema bytes alone, with no reliance on a TypeScript helper.
 - **Scoring identity**: `scoring_profile` is the constant
   `tiber-generic-full-ppr-v1` — the repository's pinned scoring profile
   (`src/contracts/genericFullPprProfile.ts`); its sha256 is recorded in the
@@ -73,10 +75,7 @@ Frozen schema: `fantasy_forecast_weekly_player_request.v1.schema.json`
   non-whitespace character (`pattern: \S`), mirroring the runtime validator's
   trim-then-check rule. Optional opportunity fields carry exactly the runtime
   validator's bounds: rates/shares 0–1, per-game volumes 0–100, signed
-  per-attempt yardage −20–60. The horizon-consistency invariant
-  (`checkFantasyForecastWeeklyPlayerRequestV1Invariants`) applies to
-  `comparison_pool` entries as well as `players`, because the comparison pool
-  feeds the replacement baseline once the combined pool reaches eight players.
+  per-attempt yardage −20–60.
 - **League replacement context**: `league_context.teams` (2–32) and
   `starters.QB/RB/WR/TE` (0–10, `FLEX` optional) are required — this is the
   context Fantasy omits today and Forecast needs for replacement/VORP.
@@ -114,9 +113,25 @@ The card requires: contract identity; player identity (`player_id`,
 `volatility_tag` (STABLE/MODERATE/VOLATILE); `fragility_tag`
 (LOW/MEDIUM/HIGH); `weekly_outlook`, `role_summary`, `value_summary`,
 `role_notes`; `scoring_components` (mirror of the six numbers, enforced by
-`checkFantasyForecastWeeklyPlayerCardV1Invariants` along with
-`floor ≤ median ≤ ceiling` and the VORP identity); `generated_at`
-(ISO-8601 UTC); `scoring_mode: "weekly"`; `view_type: "player_card"`.
+`checkFantasyForecastWeeklyPlayerCardV1Invariants` along with the range rule
+and the VORP identity); `generated_at` (canonical ISO-8601 UTC — the frozen
+schema pattern is calendar-shaped, and the reference validator additionally
+round-trips the value through Date parsing so impossible instants like
+Feb 30 are rejected); `scoring_mode: "weekly"`; `view_type: "player_card"`.
+
+Range rule, mirroring the current engine exactly: for non-negative projections
+`floor ≤ median ≤ ceiling`; for a negative projection the engine's
+multiplicative downside/upside factors invert the bracket ends, so the
+invariant is that the median lies within the floor/ceiling bracket. FFI-1
+records that corner rather than changing scoring math; renaming/reordering the
+negative bracket is an FFI-2+ question.
+
+The exported reference validators
+`validateFantasyForecastWeeklyPlayerRequestV1` /
+`validateFantasyForecastWeeklyPlayerCardResponseV1` are the documented
+validation path for TypeScript consumers: frozen schema check plus the
+cross-field card invariants the schema subset cannot express. Frozen-bytes
+consumers get every request-side rule from the schema alone.
 
 Card point/VORP/range fields are typed as finite numbers with **no magnitude
 bounds**: the scoring kernel does not clamp its outputs, so any request the

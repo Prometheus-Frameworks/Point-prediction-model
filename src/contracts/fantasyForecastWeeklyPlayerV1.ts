@@ -40,7 +40,10 @@ import { scoreWeeklyPlayerService } from '../services/scoring/scoreWeeklyPlayerS
 import { toTiberRosPlayerCard, toTiberWeeklyPlayerCard } from '../transforms/tiberScoring.js';
 import type { LeagueContextInput, PlayerOpportunityInput, ScoringPosition } from './scoring.js';
 import type { TiberWeeklyPlayerCard } from './tiberScoring.js';
-import type { JsonSchemaSubset, JsonSchemaSubsetObject } from '../validation/validateJsonSchemaSubset.js';
+import {
+  validateJsonSchemaSubset,
+  type JsonSchemaSubsetObject,
+} from '../validation/validateJsonSchemaSubset.js';
 
 // ---------------------------------------------------------------------------
 // Contract identity
@@ -69,12 +72,25 @@ export const FIXTURE_GENERATED_AT = '2026-08-22T00:00:00.000Z';
 export const FANTASY_FORECAST_WEEKLY_PLAYER_CONTRACT_V1_DIR =
   'data/contracts/fantasyForecastWeeklyPlayerV1';
 
-const ISO_UTC_TIMESTAMP_PATTERN = '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?Z$';
+// Canonical UTC instant, calendar-shaped: month 01-12, day 01-31, 24h clock,
+// optional exactly-three-digit milliseconds (the runtime emits
+// `new Date().toISOString()`). The regex is a shape gate for frozen-bytes
+// consumers; the reference card validator additionally round-trips the value
+// through Date parsing so impossible dates like Feb 30 are rejected too.
+const ISO_UTC_TIMESTAMP_PATTERN =
+  '^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(\\.\\d{3})?Z$';
 
 // ---------------------------------------------------------------------------
 // TypeScript views of the contract (convenience only — the JSON Schemas below
 // are the normative artifact that gets frozen and vendored).
 // ---------------------------------------------------------------------------
+
+/**
+ * V1 player entry: the runtime `PlayerOpportunityInput` minus per-player
+ * `week`/`season` — the request's top-level horizon is the only horizon
+ * source, for `players` and `comparison_pool` alike.
+ */
+export type FantasyForecastWeeklyPlayerOpportunityV1 = Omit<PlayerOpportunityInput, 'week' | 'season'>;
 
 export interface FantasyForecastWeeklyPlayerRequestV1 {
   contract: typeof FANTASY_FORECAST_WEEKLY_PLAYER_REQUEST_CONTRACT;
@@ -83,9 +99,9 @@ export interface FantasyForecastWeeklyPlayerRequestV1 {
   season: number;
   week: number;
   scoring_profile: typeof FANTASY_FORECAST_WEEKLY_PLAYER_SCORING_PROFILE;
-  players: [PlayerOpportunityInput];
+  players: [FantasyForecastWeeklyPlayerOpportunityV1];
   league_context: LeagueContextInput;
-  comparison_pool?: PlayerOpportunityInput[];
+  comparison_pool?: FantasyForecastWeeklyPlayerOpportunityV1[];
   replacement_points_override?: Partial<Record<ScoringPosition, number>>;
 }
 
@@ -193,8 +209,14 @@ const playerOpportunitySchema: JsonSchemaSubsetObject = {
     team: requiredString,
     position: { type: 'string', enum: ['QB', 'RB', 'WR', 'TE'] },
     games_sampled: { type: 'integer', minimum: 0, maximum: 30 },
-    week: { type: 'integer', minimum: 1, maximum: 18 },
-    season: { type: 'integer', minimum: 2000, maximum: 2100 },
+    // The request's top-level season/week is the ONLY horizon source. Per-player
+    // week/season are rejected outright so a players or comparison_pool entry can
+    // never carry a different horizon than the declared request — the comparison
+    // pool feeds the replacement baseline once the combined pool reaches eight
+    // players, and this exclusion is enforceable from the frozen schema bytes
+    // alone (Codex review rounds 1–2 on PR #183).
+    week: false,
+    season: false,
     ...Object.fromEntries(playerRateFields.map((field) => [field, rateField])),
     ...Object.fromEntries(playerVolumeFields.map((field) => [field, volumeField])),
     ...Object.fromEntries(playerYardageFields.map((field) => [field, yardageField])),
@@ -416,55 +438,49 @@ export const fantasyForecastWeeklyPlayerCardResponseV1Schema: JsonSchemaSubsetOb
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/**
- * Week/season on every player-shaped entry must agree with the request's
- * declared horizon. This covers `comparison_pool` too, not just `players`:
- * `resolveReplacementPoints` folds the comparison pool into the replacement
- * baseline once the combined pool reaches eight players, so a week- or
- * season-mismatched pool would silently shift replacement points and VORP for
- * the declared week (Codex review on PR #183).
- */
-export const checkFantasyForecastWeeklyPlayerRequestV1Invariants = (request: unknown): string[] => {
-  const issues: string[] = [];
-  if (!isRecord(request)) return ['request must be an object'];
-
-  const playerGroups: Array<[string, unknown]> = [
-    ['players', request.players],
-    ['comparison_pool', request.comparison_pool],
-  ];
-
-  for (const [groupName, group] of playerGroups) {
-    const entries = Array.isArray(group) ? group : [];
-    entries.forEach((player, index) => {
-      if (!isRecord(player)) return;
-      if (player.week !== undefined && player.week !== request.week) {
-        issues.push(
-          `${groupName}[${index}].week (${String(player.week)}) must equal request week (${String(request.week)}).`,
-        );
-      }
-      if (player.season !== undefined && player.season !== request.season) {
-        issues.push(
-          `${groupName}[${index}].season (${String(player.season)}) must equal request season (${String(request.season)}).`,
-        );
-      }
-    });
-  }
-
-  return issues;
-};
-
 const CARD_COMPONENT_FIELDS = ['expected_points', 'replacement_points', 'vorp', 'floor', 'median', 'ceiling'] as const;
 
-/** Range ordering, component mirror, and the VORP identity (2-decimal rounding). */
+/**
+ * Range bracket, component mirror, VORP identity (2-decimal rounding), and
+ * real-instant `generated_at`.
+ *
+ * Range semantics mirror the CURRENT engine: for non-negative projections
+ * `calculateRangeProfile` always yields `floor <= median <= ceiling`; for a
+ * negative projection its multiplicative downside/upside factors invert the
+ * bracket ends (e.g. expected −100 → floor −64.49, ceiling −137.16), so the
+ * invariant there is that the median lies within the floor/ceiling bracket.
+ * FFI-1 records this degenerate-corner behavior instead of changing scoring
+ * math; renaming/reordering the negative bracket is an FFI-2+ question
+ * (Codex review round 2 on PR #183).
+ */
 export const checkFantasyForecastWeeklyPlayerCardV1Invariants = (card: unknown): string[] => {
   const issues: string[] = [];
   if (!isRecord(card)) return ['card must be an object'];
 
   const { floor, median, ceiling, expected_points, replacement_points, vorp } = card as Record<string, number>;
 
-  if ([floor, median, ceiling].every((value) => typeof value === 'number')) {
-    if (!(floor <= median && median <= ceiling)) {
-      issues.push(`floor <= median <= ceiling must hold. Received ${floor} / ${median} / ${ceiling}.`);
+  if ([floor, median, ceiling, expected_points].every((value) => typeof value === 'number')) {
+    if (expected_points >= 0) {
+      if (!(floor <= median && median <= ceiling)) {
+        issues.push(
+          `floor <= median <= ceiling must hold for non-negative projections. Received ${floor} / ${median} / ${ceiling}.`,
+        );
+      }
+    } else if (!(Math.min(floor, ceiling) <= median && median <= Math.max(floor, ceiling))) {
+      issues.push(
+        `median must lie within the floor/ceiling bracket. Received floor ${floor}, median ${median}, ceiling ${ceiling}.`,
+      );
+    }
+  }
+
+  const generatedAt = card.generated_at;
+  if (typeof generatedAt === 'string') {
+    const parsedMs = Date.parse(generatedAt);
+    const normalizedInput = generatedAt.includes('.') ? generatedAt : generatedAt.replace('Z', '.000Z');
+    if (!Number.isFinite(parsedMs) || new Date(parsedMs).toISOString() !== normalizedInput) {
+      issues.push(
+        `generated_at must be a real canonical UTC instant (impossible calendar dates are rejected). Received ${JSON.stringify(generatedAt)}.`,
+      );
     }
   }
 
@@ -492,6 +508,26 @@ export const checkFantasyForecastWeeklyPlayerCardV1Invariants = (card: unknown):
 };
 
 // ---------------------------------------------------------------------------
+// Combined reference validators — the documented validation path for
+// TypeScript consumers. Frozen-bytes consumers get the same request-side
+// guarantees from the schema alone (every request rule, including the
+// horizon-exclusion of per-player week/season, is schema-mechanical); the
+// response validator layers the cross-field card invariants, which the schema
+// subset cannot express, on top of the schema check.
+// ---------------------------------------------------------------------------
+
+export const validateFantasyForecastWeeklyPlayerRequestV1 = (request: unknown): string[] =>
+  validateJsonSchemaSubset(request, fantasyForecastWeeklyPlayerRequestV1Schema);
+
+export const validateFantasyForecastWeeklyPlayerCardResponseV1 = (response: unknown): string[] => {
+  const issues = validateJsonSchemaSubset(response, fantasyForecastWeeklyPlayerCardResponseV1Schema);
+  if (isRecord(response) && response.ok === true && isRecord(response.data) && isRecord(response.data.card)) {
+    issues.push(...checkFantasyForecastWeeklyPlayerCardV1Invariants(response.data.card));
+  }
+  return issues;
+};
+
+// ---------------------------------------------------------------------------
 // Golden fixtures. The valid request is the source of the valid response card:
 // the card fixture is produced by the actual scoring services and transforms,
 // never hand-written, so there is exactly one semantic source of truth.
@@ -500,13 +536,11 @@ export const checkFantasyForecastWeeklyPlayerCardV1Invariants = (card: unknown):
 export const FIXTURE_SEASON = 2026;
 export const FIXTURE_WEEK = 1;
 
-const fixturePlayer: PlayerOpportunityInput = {
+const fixturePlayer: FantasyForecastWeeklyPlayerOpportunityV1 = {
   player_id: 'TIBER-FIXTURE-WR-0001',
   player_name: 'Fixture Wideout',
   team: 'TST',
   position: 'WR',
-  season: FIXTURE_SEASON,
-  week: FIXTURE_WEEK,
   games_sampled: 16,
   routes_pg: 34,
   route_participation: 0.86,

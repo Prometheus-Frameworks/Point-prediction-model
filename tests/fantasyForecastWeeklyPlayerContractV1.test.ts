@@ -18,8 +18,9 @@ import {
   buildValidWeeklyPlayerCardFixture,
   buildValidWeeklyPlayerRequestFixture,
   checkFantasyForecastWeeklyPlayerCardV1Invariants,
-  checkFantasyForecastWeeklyPlayerRequestV1Invariants,
   fantasyForecastWeeklyPlayerV1Fixtures,
+  validateFantasyForecastWeeklyPlayerCardResponseV1,
+  validateFantasyForecastWeeklyPlayerRequestV1,
 } from '../src/contracts/fantasyForecastWeeklyPlayerV1.js';
 import { canonicalForwardJson } from '../src/serialization/canonicalForwardArtifacts.js';
 import {
@@ -241,24 +242,82 @@ describe('FFI-1 zero / null / omitted / unavailable distinguishability', () => {
   });
 });
 
-describe('FFI-1 cross-field invariants', () => {
-  it('holds on the frozen valid request and card', () => {
-    expect(checkFantasyForecastWeeklyPlayerRequestV1Invariants(readFrozenJson('fixtures/valid_weekly_player_request.json'))).toEqual([]);
-    const response = readFrozenJson('fixtures/valid_weekly_player_card_response.json') as {
-      data: { card: unknown };
-    };
-    expect(checkFantasyForecastWeeklyPlayerCardV1Invariants(response.data.card)).toEqual([]);
+describe('FFI-1 cross-field invariants and reference validators', () => {
+  it('accepts the frozen valid request and response through the combined validators', () => {
+    expect(validateFantasyForecastWeeklyPlayerRequestV1(readFrozenJson('fixtures/valid_weekly_player_request.json'))).toEqual([]);
+    const response = readFrozenJson('fixtures/valid_weekly_player_card_response.json');
+    expect(validateFantasyForecastWeeklyPlayerCardResponseV1(response)).toEqual([]);
+    expect(checkFantasyForecastWeeklyPlayerCardV1Invariants((response as { data: { card: unknown } }).data.card)).toEqual([]);
   });
 
-  it('flags horizon-inconsistent comparison_pool entries (they feed the replacement baseline)', () => {
-    const request = buildValidWeeklyPlayerRequestFixture();
+  it('mechanically rejects per-player horizons on players AND comparison_pool from the frozen schema alone', () => {
+    const request = buildValidWeeklyPlayerRequestFixture() as unknown as {
+      players: Array<Record<string, unknown>>;
+      comparison_pool?: Array<Record<string, unknown>>;
+    };
+    request.players[0].week = FIXTURE_WEEK + 2;
     request.comparison_pool = [
-      { ...request.players[0], player_id: 'TIBER-FIXTURE-WR-0002', week: FIXTURE_WEEK + 2 },
-      { ...request.players[0], player_id: 'TIBER-FIXTURE-WR-0003', season: FIXTURE_SEASON - 1 },
+      { ...request.players[0], player_id: 'TIBER-FIXTURE-WR-0002', week: undefined, season: FIXTURE_SEASON - 1 },
     ];
-    const issues = checkFantasyForecastWeeklyPlayerRequestV1Invariants(request).join('\n');
-    expect(issues).toContain('comparison_pool[0].week');
-    expect(issues).toContain('comparison_pool[1].season');
+    delete request.comparison_pool[0].week;
+
+    const issues = validateJsonSchemaSubset(request, frozenRequestSchema).join('\n');
+    // The comparison pool feeds the replacement baseline once the combined
+    // pool reaches eight players, so a divergent horizon there must be
+    // impossible for frozen-bytes consumers, not just for callers of a TS
+    // helper: per-player week/season are rejected outright.
+    expect(issues).toContain('$.players[0].week is not allowed by this contract');
+    expect(issues).toContain('$.comparison_pool[0].season is not allowed by this contract');
+
+    const combined = validateFantasyForecastWeeklyPlayerRequestV1(request).join('\n');
+    expect(combined).toContain('$.players[0].week is not allowed by this contract');
+  });
+
+  it('rejects impossible generated_at calendar instants, not just malformed shapes', () => {
+    const response = readFrozenJson('fixtures/valid_weekly_player_card_response.json') as {
+      data: { card: Record<string, unknown> };
+    };
+    // Shape-invalid clocks die in the frozen schema pattern:
+    response.data.card.generated_at = '2026-99-99T99:99:99Z';
+    expect(validateFantasyForecastWeeklyPlayerCardResponseV1(response).join('\n')).toContain(
+      'generated_at must match pattern',
+    );
+    // Calendar-impossible but shape-valid clocks die in the instant round-trip:
+    response.data.card.generated_at = '2026-02-30T12:00:00.000Z';
+    expect(validateFantasyForecastWeeklyPlayerCardResponseV1(response).join('\n')).toContain(
+      'generated_at must be a real canonical UTC instant',
+    );
+    // A real leap-day instant passes both layers:
+    response.data.card.generated_at = '2028-02-29T12:00:00.000Z';
+    expect(validateFantasyForecastWeeklyPlayerCardResponseV1(response)).toEqual([]);
+  });
+
+  it('accepts the engine-shaped inverted bracket for negative projections', () => {
+    const card = buildValidWeeklyPlayerCardFixture() as unknown as Record<string, unknown>;
+    // calculateRangeProfile output for expected_points -100 (volatility 0.5,
+    // fragility 0.4 scale): multiplicative factors invert the bracket ends.
+    card.expected_points = -100;
+    card.replacement_points = 0;
+    card.vorp = -100;
+    card.floor = -64.49;
+    card.median = -100;
+    card.ceiling = -137.16;
+    card.scoring_components = {
+      expected_points: -100,
+      replacement_points: 0,
+      vorp: -100,
+      floor: -64.49,
+      median: -100,
+      ceiling: -137.16,
+    };
+    expect(checkFantasyForecastWeeklyPlayerCardV1Invariants(card)).toEqual([]);
+
+    // But a median outside the bracket is still flagged:
+    card.median = -200;
+    (card.scoring_components as Record<string, unknown>).median = -200;
+    expect(checkFantasyForecastWeeklyPlayerCardV1Invariants(card).join('\n')).toContain(
+      'median must lie within the floor/ceiling bracket',
+    );
   });
 
   it('accepts unbounded but finite card magnitudes (the kernel does not clamp)', () => {
@@ -281,15 +340,6 @@ describe('FFI-1 cross-field invariants', () => {
       ceiling: 980.14,
     };
     expect(validateJsonSchemaSubset(response, frozenResponseSchema)).toEqual([]);
-  });
-
-  it('flags horizon-inconsistent player week/season on the request', () => {
-    const request = buildValidWeeklyPlayerRequestFixture();
-    request.players[0].week = FIXTURE_WEEK + 1;
-    request.players[0].season = FIXTURE_SEASON + 1;
-    const issues = checkFantasyForecastWeeklyPlayerRequestV1Invariants(request);
-    expect(issues.join('\n')).toContain('players[0].week');
-    expect(issues.join('\n')).toContain('players[0].season');
   });
 
   it('flags broken range ordering and component mirrors on the card', () => {
