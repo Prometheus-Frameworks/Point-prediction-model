@@ -342,6 +342,27 @@ describe('FFI-1 cross-field invariants and reference validators', () => {
     expect(validateJsonSchemaSubset(response, frozenResponseSchema)).toEqual([]);
   });
 
+  it('flags a median that drifts from expected_points even inside the bracket', () => {
+    const card = buildValidWeeklyPlayerCardFixture() as unknown as Record<string, unknown>;
+    card.expected_points = 10;
+    card.floor = 5;
+    card.median = 9;
+    card.ceiling = 15;
+    card.replacement_points = 8;
+    card.vorp = 2;
+    card.scoring_components = {
+      expected_points: 10,
+      replacement_points: 8,
+      vorp: 2,
+      floor: 5,
+      median: 9,
+      ceiling: 15,
+    };
+    expect(checkFantasyForecastWeeklyPlayerCardV1Invariants(card).join('\n')).toContain(
+      "median must equal expected_points under the engine's 2-decimal rounding",
+    );
+  });
+
   it('flags broken range ordering and component mirrors on the card', () => {
     const card = buildValidWeeklyPlayerCardFixture() as unknown as Record<string, unknown>;
     card.median = (card.ceiling as number) + 5;

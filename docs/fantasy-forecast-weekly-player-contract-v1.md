@@ -119,8 +119,11 @@ schema pattern is calendar-shaped, and the reference validator additionally
 round-trips the value through Date parsing so impossible instants like
 Feb 30 are rejected); `scoring_mode: "weekly"`; `view_type: "player_card"`.
 
-Range rule, mirroring the current engine exactly: for non-negative projections
-`floor ≤ median ≤ ceiling`; for a negative projection the engine's
+Range rule, mirroring the current engine exactly: `median` must equal
+`expected_points` under the engine's 2-decimal rounding (that is how
+`calculateRangeProfile` computes it, so a drifted central projection is
+corruption even when it stays inside the bracket); for non-negative
+projections `floor ≤ median ≤ ceiling`; for a negative projection the engine's
 multiplicative downside/upside factors invert the bracket ends, so the
 invariant is that the median lies within the floor/ceiling bracket. FFI-1
 records that corner rather than changing scoring math; renaming/reordering the

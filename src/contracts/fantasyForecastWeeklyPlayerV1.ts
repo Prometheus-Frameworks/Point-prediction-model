@@ -27,6 +27,7 @@
  * change here.
  */
 
+import { roundTo } from '../core/scoringSystem.js';
 import {
   canonicalForwardJsonBytes,
   forwardArtifactSha256,
@@ -133,7 +134,13 @@ export type FantasyForecastWeeklyPlayerCardResponseV1 =
       contract_version: typeof FANTASY_FORECAST_WEEKLY_PLAYER_CONTRACT_VERSION;
       ok: false;
       warnings: FantasyForecastWeeklyPlayerCardResponseEnvelopeIssue[];
-      errors: FantasyForecastWeeklyPlayerCardResponseEnvelopeIssue[];
+      // Non-empty tuple: the normative schema requires minItems 1 on the
+      // failure branch, so a type-correct unavailable response can never
+      // carry an empty error list.
+      errors: [
+        FantasyForecastWeeklyPlayerCardResponseEnvelopeIssue,
+        ...FantasyForecastWeeklyPlayerCardResponseEnvelopeIssue[],
+      ];
     };
 
 // ---------------------------------------------------------------------------
@@ -458,6 +465,17 @@ export const checkFantasyForecastWeeklyPlayerCardV1Invariants = (card: unknown):
   if (!isRecord(card)) return ['card must be an object'];
 
   const { floor, median, ceiling, expected_points, replacement_points, vorp } = card as Record<string, number>;
+
+  if ([median, expected_points].every((value) => typeof value === 'number')) {
+    // calculateRangeProfile always computes median as the two-decimal-rounded
+    // expected points, so a card whose median drifts from its own expected
+    // points is corrupted even when it stays inside the floor/ceiling bracket.
+    if (Math.abs(median - roundTo(expected_points)) > 1e-9) {
+      issues.push(
+        `median must equal expected_points under the engine's 2-decimal rounding. Received median ${median} vs expected_points ${expected_points}.`,
+      );
+    }
+  }
 
   if ([floor, median, ceiling, expected_points].every((value) => typeof value === 'number')) {
     if (expected_points >= 0) {
