@@ -492,7 +492,7 @@ describe('FFI-1 offline seam proof against the live route (in-process, no networ
     }
   });
 
-  it('POST /api/tiber/weekly/player-card accepts the frozen valid request and returns the frozen card semantics', async () => {
+  it('POST /api/tiber/weekly/player-card returns EXACTLY the frozen v1 response for the frozen request (clock aside)', async () => {
     const response = await app.request('/api/tiber/weekly/player-card', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': apiKey },
@@ -501,38 +501,49 @@ describe('FFI-1 offline seam proof against the live route (in-process, no networ
     expect(response.status).toBe(200);
 
     const payload = (await response.json()) as { ok: boolean; data: { card: Record<string, unknown> } };
-    expect(payload.ok).toBe(true);
 
-    const frozenCard = (readFrozenJson('fixtures/valid_weekly_player_card_response.json') as {
-      data: { card: Record<string, unknown> };
-    }).data.card;
+    // The live response satisfies the frozen response schema, the card
+    // invariants, and the exchange binding to the request it answered.
+    const request = readFrozenJson('fixtures/valid_weekly_player_request.json');
+    expect(validateFantasyForecastWeeklyPlayerCardResponseV1(payload)).toEqual([]);
+    expect(validateFantasyForecastWeeklyPlayerExchangeV1(request, payload)).toEqual([]);
 
-    // The live card equals the frozen card minus the FFI-2-debt identity
-    // fields, with only the clock differing.
-    const liveCard = { ...payload.data.card };
-    const expectedLiveCard: Record<string, unknown> = { ...frozenCard };
-    for (const field of ['contract', 'contract_version', 'season', 'week', 'scoring_profile']) {
-      delete expectedLiveCard[field];
-    }
-    expect(typeof liveCard.generated_at).toBe('string');
-    liveCard.generated_at = FIXTURE_GENERATED_AT;
-    expectedLiveCard.generated_at = FIXTURE_GENERATED_AT;
-    expect(canonicalForwardJson(liveCard)).toBe(canonicalForwardJson(expectedLiveCard));
+    // Byte-level: pinning the live clock to the fixture clock makes the whole
+    // envelope canonical-identical to the frozen golden response. FFI-2 leaves
+    // no identity-field delta.
+    expect(typeof payload.data.card.generated_at).toBe('string');
+    payload.data.card.generated_at = FIXTURE_GENERATED_AT;
+    expect(canonicalForwardJson(payload)).toBe(
+      canonicalForwardJson(readFrozenJson('fixtures/valid_weekly_player_card_response.json')),
+    );
   });
 
-  it('POST /api/tiber/weekly/player-card rejects both invalid request fixtures with 400', async () => {
-    for (const fixture of [
-      'fixtures/invalid_missing_required_league_context.json',
-      'fixtures/invalid_null_or_unsupported_player_identity.json',
-    ]) {
+  it('POST /api/tiber/weekly/player-card rejects invalid and pre-contract bodies with identified v1 failure envelopes', async () => {
+    const oldFantasyShape = {
+      players: [(readFrozenJson('fixtures/valid_weekly_player_request.json') as { players: unknown[] }).players[0]],
+      league_context: { season: 2026, week: 1, scoring_format: 'ppr', num_teams: 12 },
+    };
+
+    const bodies: Array<[string, string]> = [
+      ['invalid_missing_required_league_context', readFrozenBytes('fixtures/invalid_missing_required_league_context.json').toString('utf8')],
+      ['invalid_null_or_unsupported_player_identity', readFrozenBytes('fixtures/invalid_null_or_unsupported_player_identity.json').toString('utf8')],
+      ['pre_contract_fantasy_shape', JSON.stringify(oldFantasyShape)],
+    ];
+
+    for (const [label, body] of bodies) {
       const response = await app.request('/api/tiber/weekly/player-card', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-api-key': apiKey },
-        body: readFrozenBytes(fixture).toString('utf8'),
+        body,
       });
-      expect(response.status, fixture).toBe(400);
-      const payload = (await response.json()) as { ok: boolean };
-      expect(payload.ok).toBe(false);
+      expect(response.status, label).toBe(400);
+
+      const payload = (await response.json()) as { ok: boolean; errors: Array<{ code: string }> };
+      expect(payload.ok, label).toBe(false);
+      expect(payload.errors.length, label).toBeGreaterThan(0);
+      // The failure envelope itself is a valid instance of the frozen
+      // response contract — failures are identified, never anonymous.
+      expect(validateFantasyForecastWeeklyPlayerCardResponseV1(payload), label).toEqual([]);
     }
   });
 });

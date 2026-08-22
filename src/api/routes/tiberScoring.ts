@@ -1,10 +1,17 @@
 import { Hono } from 'hono';
 import type { RosScoringRequest, WeeklyScoringRequest } from '../../contracts/scoring.js';
+import {
+  validateFantasyForecastWeeklyPlayerRequestV1,
+  type FantasyForecastWeeklyPlayerRequestV1,
+} from '../../contracts/fantasyForecastWeeklyPlayerV1.js';
 import type { TiberWeeklyCompareRequest } from '../../contracts/tiberScoring.js';
+import {
+  buildFantasyForecastWeeklyPlayerCardV1FailureEnvelope,
+  buildFantasyForecastWeeklyPlayerCardV1Service,
+} from '../../services/scoring/buildFantasyForecastWeeklyPlayerCardV1Service.js';
 import {
   buildRosPlayerCardService,
   buildWeeklyCompareViewService,
-  buildWeeklyPlayerCardService,
   buildWeeklyRankingsViewService,
 } from '../../services/scoring/buildTiberViewsService.js';
 import type { ServiceResult } from '../../services/result.js';
@@ -27,22 +34,29 @@ const invalidRequest = (issues: string[]): ServiceResult<never> => ({
 });
 
 export const registerTiberScoringRoutes = (app: Hono) => {
+  // FFI-2: this route conforms to the accepted fantasy_forecast.weekly_player
+  // v1 contract (TIBER-Forecast #182 / TIBER-Ops #71). Requests are validated
+  // against the frozen v1 schema semantics (fail closed: contract identity,
+  // weekly horizon, top-level season/week, scoring profile, unknown fields
+  // rejected, single-player shape enforced in the schema) and responses are
+  // emitted in the identified v1 envelope. Scoring math is unchanged; the
+  // other tiber/scoring routes keep their pre-contract behavior until their
+  // own contract phases.
   app.post('/api/tiber/weekly/player-card', async (c) => {
     const body = await c.req.json().catch(() => null);
-    const issues = validateWeeklyScoringRequest(body);
+    const issues = validateFantasyForecastWeeklyPlayerRequestV1(body);
 
     if (issues.length > 0) {
-      return c.json(invalidRequest(issues), 400);
+      return c.json(
+        buildFantasyForecastWeeklyPlayerCardV1FailureEnvelope(
+          issues.map((message) => ({ code: 'BAD_REQUEST', message })),
+        ),
+        400,
+      );
     }
 
-    const request = body as WeeklyScoringRequest;
-
-    if (request.players.length !== 1) {
-      return c.json(badRequest('Weekly player card expects exactly one player.'), 400);
-    }
-
-    const result = buildWeeklyPlayerCardService(request);
-    return c.json(result, result.ok ? 200 : 400);
+    const response = buildFantasyForecastWeeklyPlayerCardV1Service(body as FantasyForecastWeeklyPlayerRequestV1);
+    return c.json(response, response.ok ? 200 : 400);
   });
 
   app.post('/api/tiber/weekly/rankings', async (c) => {
